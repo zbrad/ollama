@@ -192,7 +192,7 @@
       }
     },
     {
-      "name": "llama_spark_linux",
+      "name": "llama_spark",
       "inherits": ["llama_spark_base"],
       "binaryDir": "${sourceDir}/../../build/llama-server-spark",
       "cacheVariables": {
@@ -391,8 +391,8 @@
       "targets": ["ggml-cuda"]
     },
     {
-      "name": "llama_spark_linux",
-      "configurePreset": "llama_spark_linux",
+      "name": "llama_spark",
+      "configurePreset": "llama_spark",
       "targets": ["llama_spark"]
     },
     {
