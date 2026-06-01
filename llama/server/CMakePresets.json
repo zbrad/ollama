@@ -181,6 +181,30 @@
       "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v132"
     },
     {
+      "name": "llama_spark_base",
+      "hidden": true,
+      "inherits": ["default"],
+      "cacheVariables": {
+        "GGML_CUDA": "ON",
+        "CMAKE_CUDA_FLAGS": "-t 4",
+        "OLLAMA_RUNNER_DIR": "spark",
+        "OLLAMA_GPU_BACKEND": "cuda"
+      }
+    },
+    {
+      "name": "llama_spark_linux",
+      "inherits": ["llama_spark_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-spark",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "121"
+      }
+    },
+    {
+      "name": "llama_spark_user_arch",
+      "inherits": ["llama_spark_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-spark"
+    },
+    {
       "name": "llama_cuda_jetpack5_base",
       "hidden": true,
       "inherits": ["default"],
@@ -365,6 +389,16 @@
       "name": "llama_cuda_v132_user_arch",
       "configurePreset": "llama_cuda_v132_user_arch",
       "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_spark_linux",
+      "configurePreset": "llama_spark_linux",
+      "targets": ["llama_spark"]
+    },
+    {
+      "name": "llama_spark_user_arch",
+      "configurePreset": "llama_spark_user_arch",
+      "targets": ["llama_spark"]
     },
     {
       "name": "llama_cuda_jetpack5",

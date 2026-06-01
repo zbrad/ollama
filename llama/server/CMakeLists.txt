@@ -89,6 +89,14 @@ if(GGML_CUDA)
     elseif(OLLAMA_RUNNER_DIR STREQUAL "cuda_jetpack6")
         ollama_set_cache_default(CMAKE_CUDA_ARCHITECTURES STRING
             "native" "CUDA architectures")
+    elseif(OLLAMA_RUNNER_DIR STREQUAL "spark")
+        ollama_set_cache_default(CMAKE_CUDA_ARCHITECTURES STRING
+            "121" "CUDA architectures")
+        ollama_set_cache_default(CMAKE_CUDA_FLAGS STRING
+            "-t 4" "CUDA compiler flags")
+    endif()
+    if(OLLAMA_RUNNER_DIR STREQUAL "spark")
+        add_custom_target(llama_spark DEPENDS ggml-cuda)
     endif()
 endif()
 
