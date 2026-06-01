@@ -182,7 +182,7 @@
     },
     {
       "name": "llama_spark",
-      "inherits": ["llama_cuda_v13_base"],
+      "inherits": ["llama_cuda_v132_base"],
       "binaryDir": "${sourceDir}/../../build/llama-server-spark",
       "cacheVariables": {
         "CMAKE_CUDA_ARCHITECTURES": "121",
