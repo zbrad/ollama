@@ -181,8 +181,40 @@
       "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v132"
     },
     {
+      "name": "llama_cuda_v133_base",
+      "hidden": true,
+      "inherits": ["default"],
+      "cacheVariables": {
+        "GGML_CUDA": "ON",
+        "CMAKE_CUDA_FLAGS": "-t 4",
+        "OLLAMA_RUNNER_DIR": "cuda_v133",
+        "OLLAMA_GPU_BACKEND": "cuda"
+      }
+    },
+    {
+      "name": "llama_cuda_v133_linux",
+      "inherits": ["llama_cuda_v133_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v133",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;90a-virtual;100-virtual;103-virtual;110-virtual;120-virtual;121-virtual"
+      }
+    },
+    {
+      "name": "llama_cuda_v133_windows",
+      "inherits": ["llama_cuda_v133_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v133",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;89-virtual;100-virtual;120-virtual"
+      }
+    },
+    {
+      "name": "llama_cuda_v133_user_arch",
+      "inherits": ["llama_cuda_v133_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v133"
+    },
+    {
       "name": "llama_spark",
-      "inherits": ["llama_cuda_v132_base"],
+      "inherits": ["llama_cuda_v133_base"],
       "binaryDir": "${sourceDir}/../../build/llama-server-spark",
       "cacheVariables": {
         "CMAKE_CUDA_ARCHITECTURES": "121",
@@ -373,6 +405,21 @@
     {
       "name": "llama_cuda_v132_user_arch",
       "configurePreset": "llama_cuda_v132_user_arch",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v133_linux",
+      "configurePreset": "llama_cuda_v133_linux",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v133_windows",
+      "configurePreset": "llama_cuda_v133_windows",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v133_user_arch",
+      "configurePreset": "llama_cuda_v133_user_arch",
       "targets": ["ggml-cuda"]
     },
     {
