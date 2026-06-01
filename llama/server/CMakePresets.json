@@ -117,6 +117,38 @@
       "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v13"
     },
     {
+      "name": "llama_cuda_v131_base",
+      "hidden": true,
+      "inherits": ["default"],
+      "cacheVariables": {
+        "GGML_CUDA": "ON",
+        "CMAKE_CUDA_FLAGS": "-t 4",
+        "OLLAMA_RUNNER_DIR": "cuda_v131",
+        "OLLAMA_GPU_BACKEND": "cuda"
+      }
+    },
+    {
+      "name": "llama_cuda_v131_linux",
+      "inherits": ["llama_cuda_v131_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v131",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;90a-virtual;100-virtual;103-virtual;110-virtual;120-virtual;121-virtual"
+      }
+    },
+    {
+      "name": "llama_cuda_v131_windows",
+      "inherits": ["llama_cuda_v131_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v131",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;89-virtual;100-virtual;120-virtual;121-virtual"
+      }
+    },
+    {
+      "name": "llama_cuda_v131_user_arch",
+      "inherits": ["llama_cuda_v131_base"],
+      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v131"
+    },
+    {
       "name": "llama_cuda_jetpack5_base",
       "hidden": true,
       "inherits": ["default"],
@@ -270,6 +302,21 @@
     {
       "name": "llama_cuda_v13_user_arch",
       "configurePreset": "llama_cuda_v13_user_arch",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v131_linux",
+      "configurePreset": "llama_cuda_v131_linux",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v131_windows",
+      "configurePreset": "llama_cuda_v131_windows",
+      "targets": ["ggml-cuda"]
+    },
+    {
+      "name": "llama_cuda_v131_user_arch",
+      "configurePreset": "llama_cuda_v131_user_arch",
       "targets": ["ggml-cuda"]
     },
     {
