@@ -574,19 +574,14 @@ if(OLLAMA_HAVE_LLAMA_SERVER)
                 CMAKE_ARGS ${_cuda_args})
             list(APPEND _backend_targets ollama-llama-server-${_backend})
         elseif(_backend STREQUAL "spark")
-            if(CMAKE_CUDA_ARCHITECTURES)
-                set(_cuda_preset llama_spark_user_arch)
-            else()
-                set(_cuda_preset llama_spark)
-            endif()
-            set(_cuda_args)
-            ollama_append_cache_arg_if_set(_cuda_args CMAKE_CUDA_ARCHITECTURES)
-            ollama_append_cache_arg_if_set(_cuda_args CMAKE_CUDA_FLAGS)
+            set(_spark_args)
+            ollama_append_cache_arg_if_set(_spark_args CUDAToolkit_ROOT)
+            ollama_append_cache_arg_if_set(_spark_args CMAKE_CUDA_FLAGS)
             ollama_add_llama_server_build(${_backend}
-                PRESET ${_cuda_preset}
+                PRESET llama_spark
                 RUNNER_DIR ${_backend}
                 TARGETS llama_spark
-                CMAKE_ARGS ${_cuda_args})
+                CMAKE_ARGS ${_spark_args})
             list(APPEND _backend_targets ollama-llama-server-${_backend})
         elseif(_backend STREQUAL "cuda_v131" OR _backend STREQUAL "cuda_v132")
             ollama_llama_cuda_preset(${_backend} _cuda_preset)
