@@ -185,3 +185,8 @@ Ollama looks for native helper binaries and acceleration libraries in installed 
 * `build/lib/ollama` and `dist/<platform>/lib/ollama` for local development builds
 
 If the libraries are not found, Ollama will not run with any acceleration libraries.
+
+For scenarios where you need to run Ollama against a custom llama.cpp build
+— such as adding a model-format compatibility shim, applying a hardware
+performance fix, or testing an unreleased architecture — see
+[Using a Local llama.cpp Build](local-llama-cpp.md).
