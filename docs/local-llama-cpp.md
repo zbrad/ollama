@@ -74,10 +74,10 @@ cmake --build build --config Release -j$(nproc)
 
 # Deploy into Ollama
 cd $GIT_ROOT/ollama
+sudo systemctl stop ollama
 sudo ./scripts/deploy-local-llama-cpp.sh
-
-# Restart the service
-sudo systemctl restart ollama
+sudo systemctl daemon-reload
+sudo systemctl start ollama
 ```
 
 The script copies everything from `$GIT_ROOT/llama.cpp/bin/` to
@@ -113,6 +113,8 @@ The deploy script backs up the original binary before symlinking:
 To revert to the Ollama-bundled binary:
 
 ```bash
+sudo systemctl stop ollama
 sudo cp /usr/local/lib/ollama/llama-server.bak /usr/local/lib/ollama/llama-server
-sudo systemctl restart ollama
+sudo systemctl daemon-reload
+sudo systemctl start ollama
 ```
