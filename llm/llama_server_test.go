@@ -49,6 +49,12 @@ func TestLlamaServerHealthParsing(t *testing.T) {
 			wantStatus: ServerStatusLoadingModel,
 		},
 		{
+			name:       "loading error envelope",
+			body:       `{"error":{"message":"Loading model","type":"unavailable_error","code":503}}`,
+			statusCode: 503,
+			wantStatus: ServerStatusLoadingModel,
+		},
+		{
 			name:       "no slots",
 			body:       `{"status":"no slot available"}`,
 			statusCode: 503,
@@ -125,8 +131,10 @@ func TestLlamaServerCompletionSSEParsing(t *testing.T) {
 	sseLines := []string{
 		`data: {"content":"Hello","stop":false}`,
 		``,
+		`:`,
 		`data: {"content":" world","stop":false}`,
 		``,
+		`:`,
 		`data: {"content":"","stop":true,"stop_type":"eos","timings":{"prompt_n":5,"prompt_ms":10.5,"predicted_n":2,"predicted_ms":20.3}}`,
 		``,
 	}
@@ -213,6 +221,103 @@ func TestLlamaServerCompletionSSEParsing(t *testing.T) {
 	}
 	if responses[2].EvalCount != 2 {
 		t.Errorf("EvalCount = %d, want 2", responses[2].EvalCount)
+	}
+}
+
+func TestLlamaServerCompletionPromptEvalCountIncludesCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/completion":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintln(w, `data: {"content":"","stop":true,"stop_type":"eos","timings":{"cache_n":12,"prompt_n":5,"prompt_ms":10,"predicted_n":2,"predicted_ms":20}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 2048}},
+	}
+
+	var responses []CompletionResponse
+	opts := api.DefaultOptions()
+	err := runner.Completion(t.Context(), CompletionRequest{
+		Prompt:  "test prompt",
+		Options: &opts,
+	}, func(cr CompletionResponse) {
+		responses = append(responses, cr)
+	})
+	if err != nil {
+		t.Fatalf("Completion error: %v", err)
+	}
+	if len(responses) != 1 {
+		t.Fatalf("got %d responses, want 1", len(responses))
+	}
+	if responses[0].PromptEvalCount != 17 {
+		t.Errorf("PromptEvalCount = %d, want 17", responses[0].PromptEvalCount)
+	}
+	if responses[0].PromptEvalDuration != 10*time.Millisecond {
+		t.Errorf("PromptEvalDuration = %s, want 10ms", responses[0].PromptEvalDuration)
+	}
+}
+
+func TestLlamaServerChatPromptEvalCountIncludesCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"Hello"}}]}`)
+			fmt.Fprintln(w, `:`)
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"cache_n":12,"prompt_n":5,"prompt_ms":10,"predicted_n":2,"predicted_ms":20}}`)
+			fmt.Fprintln(w, `data: [DONE]`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 2048}},
+	}
+
+	var responses []ChatResponse
+	opts := api.DefaultOptions()
+	err := runner.Chat(t.Context(), ChatRequest{
+		Messages: []api.Message{{Role: "user", Content: "test prompt"}},
+		Options:  &opts,
+	}, func(cr ChatResponse) {
+		responses = append(responses, cr)
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+	if responses[1].PromptEvalCount != 17 {
+		t.Errorf("PromptEvalCount = %d, want 17", responses[1].PromptEvalCount)
+	}
+	if responses[1].PromptEvalDuration != 10*time.Millisecond {
+		t.Errorf("PromptEvalDuration = %s, want 10ms", responses[1].PromptEvalDuration)
 	}
 }
 
@@ -383,14 +488,16 @@ func TestLlamaServerCompletionForwardsRepeatLastNZero(t *testing.T) {
 	}
 }
 
-func TestLlamaServerCompletionTruncatesPromptAsTokens(t *testing.T) {
-	var completionReq llamaServerCompletionRequest
+func TestLlamaServerCompletionRejectsPromptOverContext(t *testing.T) {
+	const wantError = "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length"
+
 	var tokenizeReq struct {
 		Content      string `json:"content"`
 		AddSpecial   bool   `json:"add_special"`
 		ParseSpecial *bool  `json:"parse_special"`
 	}
 
+	completionCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
@@ -402,10 +509,7 @@ func TestLlamaServerCompletionTruncatesPromptAsTokens(t *testing.T) {
 			}
 			fmt.Fprint(w, `{"tokens":[0,1,2,3,4,5,6,7,8,9]}`)
 		case "/completion":
-			if err := json.NewDecoder(r.Body).Decode(&completionReq); err != nil {
-				t.Errorf("invalid completion request body: %v", err)
-				return
-			}
+			completionCalled = true
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprintln(w, `data: {"content":"ok","stop":true,"timings":{"prompt_n":7,"prompt_ms":1,"predicted_n":1,"predicted_ms":1}}`)
 		default:
@@ -432,8 +536,15 @@ func TestLlamaServerCompletionTruncatesPromptAsTokens(t *testing.T) {
 		Options:  &opts,
 		Truncate: true,
 	}, func(cr CompletionResponse) {})
-	if err != nil {
-		t.Fatalf("Completion error: %v", err)
+	var statusErr api.StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("Completion error = %T %v, want api.StatusError", err, err)
+	}
+	if statusErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("StatusCode = %d, want %d", statusErr.StatusCode, http.StatusBadRequest)
+	}
+	if statusErr.ErrorMessage != wantError {
+		t.Fatalf("ErrorMessage = %q, want %q", statusErr.ErrorMessage, wantError)
 	}
 
 	if tokenizeReq.Content != strings.Repeat("long prompt ", 2) {
@@ -442,10 +553,149 @@ func TestLlamaServerCompletionTruncatesPromptAsTokens(t *testing.T) {
 	if !tokenizeReq.AddSpecial {
 		t.Fatal("expected tokenize request to add special tokens")
 	}
+	if completionCalled {
+		t.Fatal("completion endpoint was called")
+	}
+}
 
-	got, ok := completionReq.Prompt.([]any)
+func TestLlamaServerCompletionContextShiftAllowsPromptWithHeadroom(t *testing.T) {
+	var capturedReq llamaServerCompletionRequest
+	var tokenizeReq struct {
+		Content      string `json:"content"`
+		AddSpecial   bool   `json:"add_special"`
+		ParseSpecial *bool  `json:"parse_special"`
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/tokenize":
+			if err := json.NewDecoder(r.Body).Decode(&tokenizeReq); err != nil {
+				t.Errorf("invalid tokenize request body: %v", err)
+				return
+			}
+			fmt.Fprint(w, `{"tokens":[0,1,2,3,4,5,6]}`)
+		case "/completion":
+			if err := json.NewDecoder(r.Body).Decode(&capturedReq); err != nil {
+				t.Errorf("invalid completion request body: %v", err)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintln(w, `data: {"content":"ok","stop":true,"timings":{"prompt_n":10,"prompt_ms":1,"predicted_n":1,"predicted_ms":1}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 8}},
+		launch: llamaServerLaunchConfig{
+			config: LlamaServerConfig{ContextShift: true},
+		},
+	}
+
+	opts := api.DefaultOptions()
+	opts.NumKeep = 3
+	prompt := strings.Repeat("long prompt ", 2)
+	err := runner.Completion(t.Context(), CompletionRequest{
+		Prompt:   prompt,
+		Options:  &opts,
+		Truncate: true,
+	}, func(cr CompletionResponse) {})
+	if err != nil {
+		t.Fatalf("Completion error: %v", err)
+	}
+
+	if tokenizeReq.Content != prompt {
+		t.Fatalf("tokenize content = %q, want %q", tokenizeReq.Content, prompt)
+	}
+	if !tokenizeReq.AddSpecial {
+		t.Fatal("expected tokenize request to add special tokens")
+	}
+	if capturedReq.Prompt != prompt {
+		t.Fatalf("prompt = %q, want %q", capturedReq.Prompt, prompt)
+	}
+	if capturedReq.NKeep != opts.NumKeep {
+		t.Fatalf("n_keep = %d, want %d", capturedReq.NKeep, opts.NumKeep)
+	}
+}
+
+func TestLlamaServerCompletionContextShiftTruncatesPromptOverContext(t *testing.T) {
+	var capturedReq llamaServerCompletionRequest
+	var tokenizeReq struct {
+		Content      string `json:"content"`
+		AddSpecial   bool   `json:"add_special"`
+		ParseSpecial *bool  `json:"parse_special"`
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/tokenize":
+			if err := json.NewDecoder(r.Body).Decode(&tokenizeReq); err != nil {
+				t.Errorf("invalid tokenize request body: %v", err)
+				return
+			}
+			fmt.Fprint(w, `{"tokens":[0,1,2,3,4,5,6,7,8,9]}`)
+		case "/completion":
+			if err := json.NewDecoder(r.Body).Decode(&capturedReq); err != nil {
+				t.Errorf("invalid completion request body: %v", err)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintln(w, `data: {"content":"ok","stop":true,"timings":{"prompt_n":7,"prompt_ms":1,"predicted_n":1,"predicted_ms":1}}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 8}},
+		launch: llamaServerLaunchConfig{
+			config: LlamaServerConfig{ContextShift: true},
+		},
+	}
+
+	opts := api.DefaultOptions()
+	opts.NumKeep = 3
+	prompt := strings.Repeat("long prompt ", 2)
+	err := runner.Completion(t.Context(), CompletionRequest{
+		Prompt:   prompt,
+		Options:  &opts,
+		Truncate: true,
+	}, func(cr CompletionResponse) {})
+	if err != nil {
+		t.Fatalf("Completion error: %v", err)
+	}
+
+	if tokenizeReq.Content != prompt {
+		t.Fatalf("tokenize content = %q, want %q", tokenizeReq.Content, prompt)
+	}
+	if !tokenizeReq.AddSpecial {
+		t.Fatal("expected tokenize request to add special tokens")
+	}
+
+	got, ok := capturedReq.Prompt.([]any)
 	if !ok {
-		t.Fatalf("completion prompt = %T, want token array", completionReq.Prompt)
+		t.Fatalf("completion prompt = %T, want token array", capturedReq.Prompt)
 	}
 	want := []int{0, 1, 2, 6, 7, 8, 9}
 	if len(got) != len(want) {
@@ -456,6 +706,9 @@ func TestLlamaServerCompletionTruncatesPromptAsTokens(t *testing.T) {
 		if !ok || int(gotToken) != wantToken {
 			t.Fatalf("token prompt[%d] = %#v, want %d", i, got[i], wantToken)
 		}
+	}
+	if capturedReq.NKeep != opts.NumKeep {
+		t.Fatalf("n_keep = %d, want %d", capturedReq.NKeep, opts.NumKeep)
 	}
 }
 
@@ -701,7 +954,7 @@ func TestLlamaServerWaitUntilRunningWaitsOnRecoverableStartupOOM(t *testing.T) {
 	}
 }
 
-func TestLlamaServerWaitUntilRunningTimesOutWhenLoadExceedsTimeout(t *testing.T) {
+func TestLlamaServerWaitUntilRunningTimesOutWhenLoadStalls(t *testing.T) {
 	t.Setenv("OLLAMA_LOAD_TIMEOUT", "10ms")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -729,6 +982,55 @@ func TestLlamaServerWaitUntilRunningTimesOutWhenLoadExceedsTimeout(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "timed out waiting for llama-server to start") {
 		t.Fatalf("expected load timeout, got %q", err)
+	}
+}
+
+func TestLlamaServerWaitUntilRunningExtendsTimeoutOnOutputActivity(t *testing.T) {
+	t.Setenv("OLLAMA_LOAD_TIMEOUT", "20ms")
+
+	var activityCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			return
+		}
+		if activityCount.Load() < 5 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"message":"Loading model","type":"unavailable_error","code":503}}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port: portInt,
+		cmd:  fakeRunningCmd(),
+	}
+	runner.output = &memoryParsingWriter{inner: io.Discard, runner: runner}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				activityCount.Add(1)
+				_, _ = runner.output.Write([]byte("."))
+			}
+		}
+	}()
+
+	if err := runner.WaitUntilRunning(t.Context()); err != nil {
+		t.Fatalf("WaitUntilRunning error: %v", err)
 	}
 }
 
@@ -1298,6 +1600,47 @@ func TestLlamaServerEmbedding(t *testing.T) {
 	}
 }
 
+func TestLegacyEmbeddingsWereRaw(t *testing.T) {
+	tests := []struct {
+		name string
+		kv   ggml.KV
+		want bool
+	}{
+		{
+			name: "bert t5 raw like bge-m3",
+			kv: ggml.KV{
+				"general.architecture": "bert",
+				"bert.pooling_type":    uint32(1),
+				"tokenizer.ggml.model": "t5",
+			},
+			want: true,
+		},
+		{
+			name: "nomic bert default raw",
+			kv: ggml.KV{
+				"general.architecture":    "nomic-bert",
+				"nomic-bert.pooling_type": uint32(1),
+			},
+			want: true,
+		},
+		{
+			name: "qwen3 remains normalized",
+			kv: ggml.KV{
+				"general.architecture": "qwen3",
+				"qwen3.pooling_type":   uint32(1),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := legacyEmbeddingsWereRaw(tt.kv); got != tt.want {
+				t.Fatalf("legacyEmbeddingsWereRaw() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLlamaServerEmbeddingFallbackFormat(t *testing.T) {
 	// Fallback: non-OAI array format (from "content" field)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1644,12 +1987,20 @@ func TestAppendMMProjArgs(t *testing.T) {
 			want:        []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
 		},
 		{
-			name:        "integrated gpu disables projector offload",
+			name:        "integrated rocm gpu disables projector offload",
 			projectors:  []string{"model.gguf"},
 			opts:        defaultOpts,
 			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "ROCm"}, Integrated: true, FreeMemory: 32 << 30}},
 			modelLayers: 81,
 			want:        []string{"base", "--mmproj", "model.gguf", "--no-mmproj-offload"},
+		},
+		{
+			name:        "integrated metal gpu keeps projector offload",
+			projectors:  []string{"model.gguf"},
+			opts:        defaultOpts,
+			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "Metal"}, Integrated: true, FreeMemory: 32 << 30}},
+			modelLayers: 81,
+			want:        []string{"base", "--mmproj", "model.gguf"},
 		},
 		{
 			name:        "cpu only request disables projector offload",
@@ -2285,6 +2636,39 @@ func TestMemoryParsingWriter(t *testing.T) {
 				t.Errorf("MemorySize vram = %d, want %d", vram, expectedGPU)
 			}
 		})
+	}
+}
+
+func TestMemoryParsingWriterRecordsOutputActivityWithoutNewline(t *testing.T) {
+	runner := &llamaServerRunner{}
+	w := &memoryParsingWriter{inner: io.Discard, runner: runner}
+
+	runner.startLoadTracking(time.Now())
+	before := time.Now()
+	if _, err := w.Write([]byte("...")); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.lastLoadActivity(); got.Before(before) {
+		t.Fatalf("lastLoadActivity = %v, want after %v", got, before)
+	}
+}
+
+func TestMemoryParsingWriterIgnoresOutputActivityAfterLoadTrackingStops(t *testing.T) {
+	runner := &llamaServerRunner{}
+	w := &memoryParsingWriter{inner: io.Discard, runner: runner}
+
+	runner.startLoadTracking(time.Now())
+	if _, err := w.Write([]byte(".")); err != nil {
+		t.Fatal(err)
+	}
+	lastActivity := runner.lastLoadActivity()
+
+	runner.stopLoadTracking()
+	if _, err := w.Write([]byte(".")); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.lastLoadActivity(); !got.Equal(lastActivity) {
+		t.Fatalf("lastLoadActivity changed after tracking stopped: got %v, want %v", got, lastActivity)
 	}
 }
 

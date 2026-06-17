@@ -151,7 +151,7 @@ func TestSchedLoadStoresEffectiveContextLength(t *testing.T) {
 	}
 }
 
-func TestSchedLoadPreservesExplicitContextLength(t *testing.T) {
+func TestSchedLoadStoresEffectiveExplicitContextLength(t *testing.T) {
 	ctx, done := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer done()
 
@@ -167,7 +167,7 @@ func TestSchedLoadPreservesExplicitContextLength(t *testing.T) {
 	case err := <-scenario.req.errCh:
 		require.NoError(t, err)
 	case runner := <-scenario.req.successCh:
-		require.Equal(t, 262144, runner.Options.NumCtx)
+		require.Equal(t, 131072, runner.Options.NumCtx)
 	}
 }
 
@@ -907,19 +907,21 @@ func TestResolveContextShift(t *testing.T) {
 	tests := []struct {
 		name  string
 		shift *bool
-		ctx   int
+		model *Model
 		want  bool
 	}{
-		{name: "unset small context keeps legacy shift", ctx: 128, want: true},
-		{name: "unset large context disables shift", ctx: contextShiftSmallContextLimit, want: false},
-		{name: "unset invalid context disables shift", ctx: 0, want: false},
-		{name: "explicit false wins for small context", shift: &falseValue, ctx: 128, want: false},
-		{name: "explicit true wins for large context", shift: &trueValue, ctx: 32768, want: true},
+		{name: "unset defaults to shift", want: true},
+		{name: "unset deepseek2 disables shift", model: &Model{Config: model.ConfigV2{ModelFamily: "deepseek2"}}, want: false},
+		{name: "unset deepseek2 family disables shift", model: &Model{Config: model.ConfigV2{ModelFamilies: []string{"llama", "deepseek2"}}}, want: false},
+		{name: "explicit false disables shift", shift: &falseValue, want: false},
+		{name: "explicit false disables shift for deepseek2", shift: &falseValue, model: &Model{Config: model.ConfigV2{ModelFamily: "deepseek2"}}, want: false},
+		{name: "explicit true enables shift", shift: &trueValue, want: true},
+		{name: "explicit true enables shift for deepseek2", shift: &trueValue, model: &Model{Config: model.ConfigV2{ModelFamily: "deepseek2"}}, want: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, resolveContextShift(tt.shift, tt.ctx))
+			require.Equal(t, tt.want, resolveContextShift(tt.shift, tt.model))
 		})
 	}
 }
@@ -978,6 +980,34 @@ func TestSchedNeedsReloadUsesEffectiveAutomaticContextShift(t *testing.T) {
 	require.False(t, runner.needsReload(ctx, req))
 
 	req.numCtxAuto = false
+	require.True(t, runner.needsReload(ctx, req))
+}
+
+func TestSchedNeedsReloadUsesEffectiveExplicitContext(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	llm := &mockLlm{vramByGPU: map[ml.DeviceID]uint64{}}
+	opts := api.DefaultOptions()
+	opts.NumCtx = 2048
+	model := &Model{ModelPath: "model.gguf"}
+	runner := &runnerRef{
+		model:        model,
+		Options:      &opts,
+		llama:        llm,
+		numParallel:  1,
+		contextShift: true,
+		trainContext: 2048,
+	}
+	req := &LlmRequest{
+		model: model,
+		opts:  api.DefaultOptions(),
+	}
+	req.opts.NumCtx = 262144
+
+	require.False(t, runner.needsReload(ctx, req))
+
+	req.opts.NumCtx = 1024
 	require.True(t, runner.needsReload(ctx, req))
 }
 
@@ -1050,16 +1080,20 @@ func TestAutomaticGenerationBatch(t *testing.T) {
 		effectiveCtx int
 		predicted    uint64
 		available    uint64
+		flash        ml.FlashAttentionType
+		gpus         []ml.DeviceInfo
 		want         int
 	}{
 		{
 			name:         "small context keeps default",
 			effectiveCtx: 4096,
+			flash:        ml.FlashAttentionAuto,
 			want:         512,
 		},
 		{
 			name:         "medium context uses 1024 with unknown memory",
 			effectiveCtx: 32768,
+			flash:        ml.FlashAttentionAuto,
 			want:         1024,
 		},
 		{
@@ -1067,6 +1101,7 @@ func TestAutomaticGenerationBatch(t *testing.T) {
 			effectiveCtx: 131072,
 			predicted:    8 * format.GibiByte,
 			available:    14 * format.GibiByte,
+			flash:        ml.FlashAttentionAuto,
 			want:         2048,
 		},
 		{
@@ -1074,6 +1109,7 @@ func TestAutomaticGenerationBatch(t *testing.T) {
 			effectiveCtx: 131072,
 			predicted:    9 * format.GibiByte,
 			available:    14 * format.GibiByte,
+			flash:        ml.FlashAttentionAuto,
 			want:         1024,
 		},
 		{
@@ -1081,6 +1117,7 @@ func TestAutomaticGenerationBatch(t *testing.T) {
 			effectiveCtx: 131072,
 			predicted:    8 * format.GibiByte,
 			available:    11 * format.GibiByte,
+			flash:        ml.FlashAttentionAuto,
 			want:         1024,
 		},
 		{
@@ -1088,13 +1125,32 @@ func TestAutomaticGenerationBatch(t *testing.T) {
 			effectiveCtx: 32768,
 			predicted:    8500 * format.MebiByte,
 			available:    11 * format.GibiByte,
+			flash:        ml.FlashAttentionAuto,
 			want:         512,
+		},
+		{
+			name:         "flash attention disabled suppresses promotion",
+			effectiveCtx: 131072,
+			predicted:    8 * format.GibiByte,
+			available:    14 * format.GibiByte,
+			flash:        ml.FlashAttentionDisabled,
+			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 14 * format.GibiByte}},
+			want:         512,
+		},
+		{
+			name:         "constrained CUDA without flash attention uses smaller batch",
+			effectiveCtx: 131072,
+			predicted:    3 * format.GibiByte,
+			available:    6 * format.GibiByte,
+			flash:        ml.FlashAttentionDisabled,
+			gpus:         []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 6 * format.GibiByte}},
+			want:         256,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, automaticGenerationBatch(tt.effectiveCtx, tt.predicted, tt.available))
+			require.Equal(t, tt.want, automaticGenerationBatch(tt.effectiveCtx, tt.predicted, tt.available, tt.flash, tt.gpus))
 		})
 	}
 }

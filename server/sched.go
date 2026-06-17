@@ -132,21 +132,41 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 	return s.getRunner(c, m, opts, sessionDuration, false, false, nil)
 }
 
-const contextShiftSmallContextLimit = 8192
-
-func resolveContextShift(shift *bool, numCtx int) bool {
+func resolveContextShift(shift *bool, m *Model) bool {
 	if shift != nil {
 		return *shift
 	}
 
-	return numCtx > 0 && numCtx < contextShiftSmallContextLimit
+	return supportsContextShift(m)
+}
+
+func supportsContextShift(m *Model) bool {
+	if m == nil {
+		return true
+	}
+
+	if m.Config.ModelFamily == "deepseek2" || slices.Contains(m.Config.ModelFamilies, "deepseek2") {
+		return false
+	}
+
+	return true
 }
 
 func effectiveModelContext(numCtx int, f *ggml.GGML) int {
-	if f != nil {
-		if trainCtx := int(f.KV().ContextLength()); trainCtx > 0 && numCtx > trainCtx {
-			return trainCtx
-		}
+	return effectiveContext(numCtx, modelTrainContext(f))
+}
+
+func modelTrainContext(f *ggml.GGML) int {
+	if f == nil {
+		return 0
+	}
+
+	return int(f.KV().ContextLength())
+}
+
+func effectiveContext(numCtx, trainCtx int) int {
+	if trainCtx > 0 && numCtx > trainCtx {
+		return trainCtx
 	}
 
 	return numCtx
@@ -164,7 +184,7 @@ func (s *Scheduler) getRunner(c context.Context, m *Model, opts api.Options, ses
 
 	contextShift := false
 	if m.ModelPath != "" {
-		contextShift = resolveContextShift(shift, opts.NumCtx)
+		contextShift = resolveContextShift(shift, m)
 	}
 
 	req := &LlmRequest{
@@ -522,7 +542,8 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			predicted := llm.PredictServerVRAM(req.model.ModelPath, f, predictedCtx)
 			loadGpus, launchOpts = selectLlamaServerPlacement(systemInfo, gpus, predicted, req.opts)
 			availableForBatch, _, _ := availableMemoryForPlacement(systemInfo, loadGpus, launchOpts)
-			req.applyAutomaticGenerationBatch(completion, predictedCtx, predicted, availableForBatch)
+			flashAttention := llm.LlamaServerFlashAttention(loadGpus)
+			req.applyAutomaticGenerationBatch(completion, predictedCtx, predicted, availableForBatch, flashAttention, loadGpus)
 			launchOpts.NumBatch = req.opts.NumBatch
 			predictedForLoad := predicted + generationBatchSurchargeForCompletion(completion, launchOpts.NumBatch)
 
@@ -555,7 +576,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			}
 
 			launchOpts = s.applyLlamaServerMmapDefaults(req, launchOpts, systemInfo, loadGpus, f, numParallel)
-			req.contextShift = resolveContextShift(req.shift, effectiveModelContext(launchOpts.NumCtx, f))
+			req.contextShift = resolveContextShift(req.shift, req.model)
 
 			config := llamaServerConfigForModel(req.model)
 			config.ContextShift = req.contextShift
@@ -660,6 +681,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		req.errCh <- err
 		return false
 	}
+	logTemplateSelection(req.model)
 
 	// Determine if we have discrete GPUs which we should monitor VRAM usage on during shutdown
 	discreteGPUs := false
@@ -676,8 +698,10 @@ iGPUScan:
 	}
 
 	totalSize, vramSize := llama.MemorySize()
-	if effectiveNumCtx := llama.ContextLength(); req.numCtxAuto && effectiveNumCtx > 0 {
+	trainContext := modelTrainContext(f)
+	if effectiveNumCtx := llama.ContextLength(); req.model.ModelPath != "" && effectiveNumCtx > 0 {
 		req.opts.NumCtx = effectiveNumCtx
+		req.contextShift = resolveContextShift(req.shift, req.model)
 	}
 	runner := &runnerRef{
 		model:           req.model,
@@ -697,6 +721,7 @@ iGPUScan:
 		numBatchAuto:    req.numBatchAuto,
 		useMMapAuto:     req.useMMapAuto,
 		contextShift:    req.contextShift,
+		trainContext:    trainContext,
 	}
 	runner.numParallel = numParallel
 	runner.refMu.Lock() // hold lock until running or aborted
@@ -763,7 +788,7 @@ func (req *LlmRequest) reduceAutoNumCtxForLoadOOM(f *ggml.GGML, numParallel int,
 	predictedCtx := effectiveLlamaServerContext(req.opts.NumCtx, f, numParallel)
 	predictedVRAM := llm.PredictServerVRAM(req.model.ModelPath, f, predictedCtx)
 	available, _, _ := availableMemoryForPlacement(systemInfo, gpus, launchOpts)
-	req.applyAutomaticGenerationBatch(completion, predictedCtx, predictedVRAM, available)
+	req.applyAutomaticGenerationBatch(completion, predictedCtx, predictedVRAM, available, llm.LlamaServerFlashAttention(gpus), gpus)
 	newNumBatch = req.opts.NumBatch
 	return oldNumCtx, effectiveNumCtx, newNumCtx, oldNumBatch, newNumBatch, true
 }
@@ -781,20 +806,21 @@ func effectiveLlamaServerContext(numCtx int, f *ggml.GGML, numParallel int) int 
 }
 
 const (
-	llamaServerGenerationBatchDefault = 512
-	llamaServerGenerationBatchMedium  = 1024
-	llamaServerGenerationBatchLarge   = 2048
+	llamaServerGenerationBatchDefault     = 512
+	llamaServerGenerationBatchConstrained = 256
+	llamaServerGenerationBatchMedium      = 1024
+	llamaServerGenerationBatchLarge       = 2048
 
 	llamaServerGenerationBatchMediumHeadroomPercent = 75
 	llamaServerGenerationBatchLargeHeadroomPercent  = 60
 )
 
-func (req *LlmRequest) applyAutomaticGenerationBatch(completion bool, effectiveCtx int, predictedVRAM, availableMemory uint64) {
+func (req *LlmRequest) applyAutomaticGenerationBatch(completion bool, effectiveCtx int, predictedVRAM, availableMemory uint64, flashAttention ml.FlashAttentionType, gpus []ml.DeviceInfo) {
 	if !completion || !req.numBatchAuto {
 		return
 	}
 
-	req.opts.NumBatch = automaticGenerationBatch(effectiveCtx, predictedVRAM, availableMemory)
+	req.opts.NumBatch = automaticGenerationBatch(effectiveCtx, predictedVRAM, availableMemory, flashAttention, gpus)
 }
 
 func generationBatchSurchargeForCompletion(completion bool, batch int) uint64 {
@@ -804,12 +830,41 @@ func generationBatchSurchargeForCompletion(completion bool, batch int) uint64 {
 	return generationBatchSurcharge(batch)
 }
 
-func automaticGenerationBatch(effectiveCtx int, predictedVRAM, availableMemory uint64) int {
+func automaticGenerationBatch(effectiveCtx int, predictedVRAM, availableMemory uint64, flashAttention ml.FlashAttentionType, gpus []ml.DeviceInfo) int {
+	if flashAttention == ml.FlashAttentionDisabled && hasCUDADevice(gpus) {
+		if constrainedCUDAWithoutFlashAttention(effectiveCtx, gpus) {
+			return llamaServerGenerationBatchConstrained
+		}
+		return llamaServerGenerationBatchDefault
+	}
+
 	batch := generationBatchForContext(effectiveCtx)
 	for batch > llamaServerGenerationBatchDefault && !generationBatchFits(batch, predictedVRAM, availableMemory) {
 		batch = nextLowerGenerationBatch(batch)
 	}
 	return batch
+}
+
+func hasCUDADevice(gpus []ml.DeviceInfo) bool {
+	return slices.ContainsFunc(gpus, func(gpu ml.DeviceInfo) bool {
+		return gpu.Library == "CUDA"
+	})
+}
+
+func constrainedCUDAWithoutFlashAttention(effectiveCtx int, gpus []ml.DeviceInfo) bool {
+	if effectiveCtx <= 4096 {
+		return false
+	}
+	return slices.ContainsFunc(gpus, func(gpu ml.DeviceInfo) bool {
+		if gpu.Library != "CUDA" {
+			return false
+		}
+		memory := gpu.FreeMemory
+		if memory == 0 || (gpu.TotalMemory > 0 && gpu.TotalMemory < memory) {
+			memory = gpu.TotalMemory
+		}
+		return memory > 0 && memory <= 8*format.GibiByte
+	})
 }
 
 func generationBatchForContext(effectiveCtx int) int {
@@ -1316,6 +1371,7 @@ type runnerRef struct {
 	numBatchAuto bool
 	useMMapAuto  bool
 	contextShift bool
+	trainContext int
 	*api.Options
 }
 
@@ -1357,6 +1413,7 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	// Don't reload runner if num_gpu=-1 was provided
 	optsExisting := runner.Options.Runner
 	optsNew := req.opts.Runner
+	optsNew.NumCtx = effectiveContext(optsNew.NumCtx, runner.trainContext)
 	if runner.numCtxAuto && req.numCtxAuto {
 		optsNew.NumCtx = optsExisting.NumCtx
 	}
@@ -1373,7 +1430,7 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	contextShift := req.contextShift
 	if req.model.ModelPath != "" {
-		contextShift = resolveContextShift(req.shift, optsNew.NumCtx)
+		contextShift = resolveContextShift(req.shift, req.model)
 	}
 	if runner.contextShift != contextShift {
 		return true
