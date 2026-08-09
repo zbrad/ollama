@@ -52,45 +52,70 @@ libraries in the subdirectory continue to be used unless you also replace them.
 
 `zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for each
 GPU-variant build (see that repo's `tuned/` directory) — tagged
-`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. The
-`scripts/fetch-llama-cpp-release.sh` script in this repo downloads the
-release matching your machine's detected GPU and CUDA toolkit version, and
-deploys it — **no local llama.cpp checkout or build required.**
+`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. Two scripts in
+this repo consume it, sharing common logic from `scripts/lib/llama-cpp-release.sh`:
+
+- **`scripts/deploy-llama-cpp-system.sh`** — deploys into a system Ollama
+  installation (`/usr/local/lib/ollama/`, managed by systemd). Needs `sudo`.
+- **`scripts/deploy-llama-cpp-local.sh`** — deploys into this repo's own
+  `build/lib/ollama/` dev-layout directory. No `sudo`, no system files
+  touched. Runs Ollama on an alternate port (default `11435`) so it can run
+  alongside a system Ollama instance. Useful for testing, and as a fixed,
+  documented target for integration tests.
+
+Both auto-detect your GPU variant (via `nvidia-smi`) and CUDA toolkit
+version (via `nvcc`, falling back to `nvidia-smi`'s reported max-supported
+version), find the matching release on `zbrad/llama.cpp` (exact CUDA match
+preferred; falls back to the newest release with matching CUDA major and
+toolkit version ≤ this host's — CUDA's runtime ABI is forward-compatible
+only within a major series), download and extract it, copy
+`llama-server` + `llama-quantize` + shared libraries into place, and
+normalize sonames. **No local llama.cpp checkout or build required.**
+
+### System mode
 
 ```bash
 sudo systemctl stop ollama
-sudo ./scripts/fetch-llama-cpp-release.sh
+sudo ./scripts/deploy-llama-cpp-system.sh
 sudo systemctl daemon-reload
 sudo systemctl start ollama
 ```
 
-The script:
-1. Detects your GPU variant from `nvidia-smi` (gb10/rtx40/rtx50) and your
-   CUDA toolkit version from `nvcc` (falling back to `nvidia-smi`'s reported
-   max-supported version if `nvcc` isn't installed).
-2. Finds the matching release on `zbrad/llama.cpp` — exact CUDA version
-   match preferred; if none exists, falls back to the newest release with
-   CUDA major version match and toolkit version ≤ this host's (CUDA's
-   runtime ABI is forward-compatible only within a major series).
-3. Downloads and extracts the release tarball, copies `llama-server` +
-   `llama-quantize` + all shared libraries into
-   `/usr/local/lib/ollama/local_llama_cpp/`, normalizes sonames, and
-   symlinks `/usr/local/lib/ollama/llama-server` to the deployed binary.
-
-Pass `--dry-run` to preview what it will do without writing any files.
-
-Override any of the detected/default values:
+### Local mode
 
 ```bash
-sudo ./scripts/fetch-llama-cpp-release.sh \
+./scripts/deploy-llama-cpp-local.sh --serve
+# or, to deploy without launching:
+./scripts/deploy-llama-cpp-local.sh
+cd .. && OLLAMA_HOST=127.0.0.1:11435 ./ollama serve
+```
+
+> **Known limitation (2026-08-09, not yet fixed)**: in local mode, Ollama's
+> own GPU-discovery subprocess mixes this repo's own CMake-built `libggml`
+> (in `build/lib/ollama/`) with the deployed tuned build (in
+> `build/lib/ollama/local_llama_cpp/`) on its search path — confirmed to
+> segfault the discovery probe, which then falls back to CPU-only. The
+> deployed binary itself works fine standalone
+> (`build/lib/ollama/local_llama_cpp/llama-server --list-devices` correctly
+> lists the GPU) — this is specifically about Ollama's discovery subprocess
+> mixing two library sets, not the binary itself. System mode is unaffected
+> (no competing Ollama-built `libggml` present at `/usr/local/lib/ollama/`
+> on a normal install). Root-cause details in the `-home-zbrad-gh` project
+> memory's `tuned-builds-expansion-plan.md`.
+
+Both scripts accept `--dry-run` (preview without writing files), `--variant`,
+`--cuda-version`, and `--tag` (fetch an exact release, bypassing
+auto-detection) overrides:
+
+```bash
+sudo ./scripts/deploy-llama-cpp-system.sh \
   --variant gb10 \
   --cuda-version 13.3 \
   --tag v10333-gb10-cu133 \
   --ollama-target-dir /usr/local/lib/ollama/my_build
-```
 
-`--tag` fetches an exact release, bypassing variant/CUDA auto-detection and
-matching entirely.
+./scripts/deploy-llama-cpp-local.sh --tag v10333-gb10-cu133 --port 11436
+```
 
 ## Keeping In Sync
 
