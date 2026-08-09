@@ -189,4 +189,4 @@ If the libraries are not found, Ollama will not run with any acceleration librar
 For scenarios where you need to run Ollama against a custom llama.cpp build
 — such as adding a model-format compatibility shim, applying a hardware
 performance fix, or testing an unreleased architecture — see
-[Using a Local llama.cpp Build](local-llama-cpp.md).
+[Using a Released llama.cpp Build](llama-cpp-release.md).

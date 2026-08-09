@@ -1,4 +1,4 @@
-# Using a Local llama.cpp Build with Ollama
+# Using a Released llama.cpp Build with Ollama
 
 Ollama bundles a specific version of llama.cpp and ships it as part of each
 release. In most cases this is what you want. There are situations, however,
@@ -20,18 +20,13 @@ See `docs/ollama-compat.md` in the llama.cpp repo for the full description.
 **Performance fixes for specific hardware.** llama.cpp's generic code paths
 are not always optimal for every device. On NVIDIA GB10 (DGX Spark), the
 default mmap load path produces ~259 MB/s because it issues a synchronous
-`cudaMemcpyAsync` per tensor from cold mmap pages. A local build with
+`cudaMemcpyAsync` per tensor from cold mmap pages. A tuned build with
 `--no-mmap` wired in via the model Modelfile achieves 1131 MB/s on the same
-hardware. Hardware-specific tuning like this often lives in a local fork
-before (or instead of) landing upstream.
-
-**Instrumentation and debugging.** When diagnosing load-time or inference
-performance, adding `fprintf(stderr, ...)` markers to `llama-model-loader.cpp`
-or `ggml-backend.cpp` is far faster than waiting for a release. A local build
-lets you iterate on instrumentation freely without forking Ollama itself.
+hardware. Hardware-specific tuning like this often lives in a fork before
+(or instead of) landing upstream.
 
 **Testing unreleased architecture support.** New model architectures land in
-llama.cpp before Ollama picks them up. A local llama.cpp build lets Ollama
+llama.cpp before Ollama picks them up. A tuned llama.cpp build lets Ollama
 serve models that its bundled version does not yet understand.
 
 ## How Ollama Finds llama-server
@@ -53,58 +48,64 @@ Replacing the binary at `/usr/local/lib/ollama/llama-server` is therefore
 sufficient to make Ollama use a different llama.cpp build. The GPU backend
 libraries in the subdirectory continue to be used unless you also replace them.
 
-## Deploying a Local Build
+## Deploying a Published Release
 
-The `scripts/deploy-local-llama-cpp.sh` script automates the deployment. It
-expects the two projects to be siblings under a common parent directory:
-
-```
-$GIT_ROOT/
-  ollama/       ← this repo
-  llama.cpp/    ← your local llama.cpp build
-```
-
-Build your local llama.cpp, then run the script as root:
+`zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for each
+GPU-variant build (see that repo's `tuned/` directory) — tagged
+`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. The
+`scripts/fetch-llama-cpp-release.sh` script in this repo downloads the
+release matching your machine's detected GPU and CUDA toolkit version, and
+deploys it — **no local llama.cpp checkout or build required.**
 
 ```bash
-# Build llama.cpp (example for GB10 / DGX Spark)
-cd $GIT_ROOT/llama.cpp
-cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=1210
-cmake --build build --config Release -j$(nproc)
-
-# Deploy into Ollama
-cd $GIT_ROOT/ollama
 sudo systemctl stop ollama
-sudo ./scripts/deploy-local-llama-cpp.sh
+sudo ./scripts/fetch-llama-cpp-release.sh
 sudo systemctl daemon-reload
 sudo systemctl start ollama
 ```
 
-The script copies everything from `$GIT_ROOT/llama.cpp/bin/` to
-`/usr/local/lib/ollama/local_llama_cpp/` and symlinks
-`/usr/local/lib/ollama/llama-server` to the deployed binary. Pass
-`--dry-run` to preview what it will do without writing any files.
+The script:
+1. Detects your GPU variant from `nvidia-smi` (gb10/rtx40/rtx50) and your
+   CUDA toolkit version from `nvcc` (falling back to `nvidia-smi`'s reported
+   max-supported version if `nvcc` isn't installed).
+2. Finds the matching release on `zbrad/llama.cpp` — exact CUDA version
+   match preferred; if none exists, falls back to the newest release with
+   CUDA major version match and toolkit version ≤ this host's (CUDA's
+   runtime ABI is forward-compatible only within a major series).
+3. Downloads and extracts the release tarball, copies `llama-server` +
+   `llama-quantize` + all shared libraries into
+   `/usr/local/lib/ollama/local_llama_cpp/`, normalizes sonames, and
+   symlinks `/usr/local/lib/ollama/llama-server` to the deployed binary.
 
-Override either path if your layout differs:
+Pass `--dry-run` to preview what it will do without writing any files.
+
+Override any of the detected/default values:
 
 ```bash
-sudo ./scripts/deploy-local-llama-cpp.sh \
-  --llama-cpp-source-dir /path/to/llama.cpp/bin \
+sudo ./scripts/fetch-llama-cpp-release.sh \
+  --variant gb10 \
+  --cuda-version 13.3 \
+  --tag v10333-gb10-cu133 \
   --ollama-target-dir /usr/local/lib/ollama/my_build
 ```
 
+`--tag` fetches an exact release, bypassing variant/CUDA auto-detection and
+matching entirely.
+
 ## Keeping In Sync
 
-The deployed build is not updated automatically. After rebuilding your local
-llama.cpp, re-run the deploy script and restart Ollama to pick up the changes.
+The deployed build is not updated automatically. After a new release is
+published on `zbrad/llama.cpp`, re-run the fetch script and restart Ollama
+to pick up the change — it always resolves to the latest matching release
+at run time.
 
 When Ollama itself releases a new version, its installer will overwrite
-`/usr/local/lib/ollama/llama-server`. Re-run the deploy script after an
-Ollama upgrade to restore your local build.
+`/usr/local/lib/ollama/llama-server`. Re-run the fetch script after an
+Ollama upgrade to restore the tuned build.
 
 ## Reverting
 
-The deploy script backs up the original binary before symlinking:
+The fetch script backs up the original binary before symlinking:
 
 ```
 /usr/local/lib/ollama/llama-server.bak
