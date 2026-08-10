@@ -51,6 +51,21 @@ if [ -z "$VARIANT" ]; then
     esac
 fi
 
+# --- Verify CPU architecture matches the variant ---
+# Each variant is only built for one CPU architecture -- gb10 is DGX Spark
+# (aarch64); rtx40/rtx50 are consumer desktop/laptop parts (x86_64). Fail
+# before downloading anything if this machine doesn't match, rather than
+# fetching a release tarball built for the wrong architecture.
+machine_arch="$(uname -m)"
+case "$VARIANT" in
+    gb10)        expected_arch="aarch64" ;;
+    rtx40|rtx50) expected_arch="x86_64" ;;
+    *)           expected_arch="" ;;
+esac
+if [ -n "$expected_arch" ] && [ "$machine_arch" != "$expected_arch" ]; then
+    die "architecture mismatch: this machine is $machine_arch, but variant '$VARIANT' releases are built for $expected_arch (set LLAMA_CPP_VARIANT explicitly if auto-detection got this wrong)"
+fi
+
 # --- Detect CUDA toolkit version ---
 if [ -z "$CUDA_VERSION" ]; then
     if command -v nvcc >/dev/null 2>&1; then

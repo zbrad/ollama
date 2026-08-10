@@ -90,6 +90,27 @@ else
         [ -n "$driver_ver" ] && ok "driver version: $driver_ver"
     fi
 
+    if [ -n "$VARIANT" ]; then
+        # Each variant is only built for one CPU architecture -- gb10 is
+        # DGX Spark (aarch64); rtx40/rtx50 are consumer desktop/laptop
+        # parts (x86_64). A mismatch here means either LLAMA_CPP_VARIANT
+        # was overridden wrong, or (once more variants exist) an unusual
+        # ARM+discrete-GPU combination the release tarballs don't cover.
+        machine_arch="$(uname -m)"
+        case "$VARIANT" in
+            gb10)          expected_arch="aarch64" ;;
+            rtx40|rtx50)   expected_arch="x86_64" ;;
+            *)             expected_arch="" ;;
+        esac
+        if [ -n "$expected_arch" ]; then
+            if [ "$machine_arch" = "$expected_arch" ]; then
+                ok "architecture matches: $machine_arch (expected $expected_arch for $VARIANT)"
+            else
+                bad "architecture mismatch: this machine is $machine_arch, but variant '$VARIANT' releases are built for $expected_arch — set LLAMA_CPP_VARIANT explicitly if auto-detection got this wrong"
+            fi
+        fi
+    fi
+
     if [ -e /dev/nvidia0 ] || [ -e /dev/nvidiactl ]; then
         ok "NVIDIA device nodes present (/dev/nvidia*)"
     else
