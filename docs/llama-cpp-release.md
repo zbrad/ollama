@@ -52,8 +52,37 @@ libraries in the subdirectory continue to be used unless you also replace them.
 
 `zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for each
 GPU-variant build (see that repo's `tuned/` directory) — tagged
-`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. Two scripts in
-this repo consume it, sharing common logic from `scripts/lib/llama-cpp-release.sh`:
+`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. Both repos are
+public, so the release assets are fetchable from any machine, no auth or
+`gh` CLI required.
+
+### One-liner install on a fresh machine (no clone required)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh | bash
+```
+
+Self-contained — `scripts/install-llama-cpp-release.sh` doesn't source
+anything else, so it works piped straight into `bash` without a checkout of
+this repo. Detects GPU variant + CUDA version the same way as the scripts
+below, fetches the matching release via plain `curl` against the public
+GitHub API (no `gh` CLI dependency), and deploys into
+`/usr/local/lib/ollama/`. Auto-elevates via `sudo` if not already root.
+Override detection with `LLAMA_CPP_VARIANT`, `LLAMA_CPP_CUDA_VERSION`, or
+pin an exact release with `LLAMA_CPP_TAG`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh \
+  | LLAMA_CPP_TAG=v10333-gb10-cu133 bash
+```
+
+Restart Ollama afterward: `sudo systemctl restart ollama`.
+
+### From a checkout of this repo
+
+Two scripts share common logic from `scripts/lib/llama-cpp-release.sh` (kept
+in sync with the one-liner installer above, but only usable from a real
+checkout since they `source` a sibling file by relative path):
 
 - **`scripts/deploy-llama-cpp-system.sh`** — deploys into a system Ollama
   installation (`/usr/local/lib/ollama/`, managed by systemd). Needs `sudo`.
