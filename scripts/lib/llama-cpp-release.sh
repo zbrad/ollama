@@ -103,7 +103,7 @@ llama_release_fetch() {
 
     gh release download "$TAG" --repo "$LLAMA_CPP_REPO" --dir "$work_dir" --clobber
     local asset
-    asset="$(find "$work_dir" -maxdepth 1 -name '*.tar.gz' | head -1)"
+    asset="$(find "$work_dir" -maxdepth 1 -name '*.tar.gz' | head -1 || true)"
     [[ -n "$asset" ]] || llama_release_die "no .tar.gz asset found in release $TAG"
     tar -xzf "$asset" -C "$dest_dir"
 

@@ -123,7 +123,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 ASSET_URL="https://github.com/${LLAMA_CPP_REPO}/releases/download/${TAG}/$(
     curl -fsSL "https://api.github.com/repos/${LLAMA_CPP_REPO}/releases/tags/${TAG}" \
-        | grep -o '"name": *"[^"]*\.tar\.gz"' | sed 's/.*"name": *"\([^"]*\)"/\1/' | head -1
+        | grep -o '"name": *"[^"]*\.tar\.gz"' | sed 's/.*"name": *"\([^"]*\)"/\1/' | head -1 || true
 )"
 status "Downloading $ASSET_URL"
 curl -fsSL "$ASSET_URL" -o "$WORK_DIR/release.tar.gz"

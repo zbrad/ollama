@@ -160,7 +160,15 @@ else
     echo "      Ollama downloads/docs: https://ollama.com/download"
 fi
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl list-unit-files 2>/dev/null | grep -q '^ollama\.service'; then
+    # Captured to a variable before grepping, not `systemctl ... | grep -q`
+    # directly -- grep -q exits after its first match, which can SIGPIPE a
+    # still-writing systemctl (list-unit-files has 100+ lines) before it
+    # finishes; under `pipefail` that reports as pipeline failure even
+    # though grep found what it needed. Confirmed empirically: the direct
+    # form spuriously warned "not registered" on a machine where the unit
+    # plainly was (verified separately via the same command run standalone).
+    unit_files="$(systemctl list-unit-files 2>/dev/null || true)"
+    if echo "$unit_files" | grep -q '^ollama\.service'; then
         ok "ollama.service registered with systemd"
         state="$(systemctl is-active ollama 2>&1 || true)"
         ok "ollama.service current state: $state"
