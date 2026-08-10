@@ -58,25 +58,47 @@ public, so the release assets are fetchable from any machine, no auth or
 
 ### One-liner install on a fresh machine (no clone required)
 
+**Check first, install second** — validate the environment before
+downloading/deploying anything, so a bad environment fails fast with a
+clear diagnostic instead of partway through a real install:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/precheck-llama-cpp-release.sh | bash
 ```
 
-Self-contained — `scripts/install-llama-cpp-release.sh` doesn't source
-anything else, so it works piped straight into `bash` without a checkout of
-this repo. Detects GPU variant + CUDA version the same way as the scripts
-below, fetches the matching release via plain `curl` against the public
-GitHub API (no `gh` CLI dependency), and deploys into
-`/usr/local/lib/ollama/`. Auto-elevates via `sudo` if not already root.
-Override detection with `LLAMA_CPP_VARIANT`, `LLAMA_CPP_CUDA_VERSION`, or
-pin an exact release with `LLAMA_CPP_TAG`:
+Checks: required tools, network reachability, GPU + driver detection, CUDA
+toolkit presence, Ollama installed + registered with systemd, and (via a
+small GitHub API metadata call, no tarball download) that a matching
+release actually exists for this machine's variant/CUDA combination.
+Failures point to the relevant NVIDIA/Ollama download or docs page. Exits
+0 if everything passes.
+
+Then, once the precheck is clean:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh | sudo bash
+sudo systemctl restart ollama
+```
+
+Both scripts are self-contained — they don't source anything else, so they
+work piped straight into `bash`/`sudo bash` without a checkout of this
+repo. The installer detects GPU variant + CUDA version the same way the
+precheck does, fetches the matching release via plain `curl` against the
+public GitHub API (no `gh` CLI dependency), and deploys into
+`/usr/local/lib/ollama/`. It auto-elevates via `sudo` if not already root,
+but piping directly into `sudo bash` (as above) avoids a mid-script
+re-prompt. Override detection on either script with `LLAMA_CPP_VARIANT`,
+`LLAMA_CPP_CUDA_VERSION`, or pin an exact release with `LLAMA_CPP_TAG`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh \
-  | LLAMA_CPP_TAG=v10333-gb10-cu133 bash
+  | sudo env LLAMA_CPP_TAG=v10333-gb10-cu133 bash
 ```
 
-Restart Ollama afterward: `sudo systemctl restart ollama`.
+(`sudo env VAR=val bash`, not `VAR=val sudo bash` — `sudo` resets the
+environment by default, so a plain variable prefix in front of `sudo`
+never reaches the process it execs; `env` inside the `sudo` invocation is
+what actually sets it there.)
 
 ### From a checkout of this repo
 
