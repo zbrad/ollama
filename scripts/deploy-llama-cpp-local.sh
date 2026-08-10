@@ -17,24 +17,24 @@
 # subdirectory + a symlinked llama-server), just rooted under this repo's
 # build/lib/ollama/ instead of /usr/local/lib/ollama/.
 #
-# KNOWN LIMITATION (2026-08-09, not yet fixed): Ollama's own GPU-discovery
-# subprocess sets LD_LIBRARY_PATH to BOTH build/lib/ollama (Ollama's own
-# CMake-built libggml, a different/older version) AND
-# build/lib/ollama/local_llama_cpp (this deploy's libggml) together. Mixing
-# both in one process has been observed to segfault the discovery
-# subprocess -- confirmed via a direct repro
-# (discover.llamaServerDiscoverDevices), not just inference from logs.
-# Ollama then falls back to CPU-only. The deployed binary itself is fine
-# when run standalone (`local_llama_cpp/llama-server --list-devices` works
-# correctly) -- this is specifically about Ollama's own subprocess-based
-# GPU probe mixing two library sets. Root cause not yet fixed; needs either
-# a change to Ollama's discovery code (e.g. probe using ONLY the
-# local_llama_cpp dir, not both) or a way to fully replace (not
-# supplement) Ollama's own bundled ggml libs. Separately: newer llama.cpp
-# "router mode" (triggered when llama-server is started with no model, as
-# Ollama's discovery does) skips per-device compute-capability reporting by
-# design -- non-blocking (falls back to unfiltered CUDA arch matching with
-# a warning) but worth knowing about if you see that warning in the logs.
+# FIXED (2026-08-10): Ollama's own GPU-discovery subprocess used to segfault
+# in this local-mode layout. Root cause (llm/llama_server.go): llama-server
+# is found via a symlink AT build/lib/ollama itself, but the library-path
+# builder derived llamaDir from that *unresolved* symlink path -- making it
+# equal build/lib/ollama instead of the local_llama_cpp/ dir the real
+# binary lives in, which broke the "skip dirs already covered by llamaDir"
+# dedup and let Ollama's own (differently-versioned) common libs load ahead
+# of the deployed build's matching set, crashing when a GPU backend .so
+# loaded against the wrong ggml-base already resident. Fixed by resolving
+# symlinks before deriving llamaDir. Verified end-to-end with real
+# inference, not just discovery logs -- see tuned-builds-expansion-plan.md
+# (project -home-zbrad-gh) for the full writeup.
+#
+# Separately (non-blocking, unrelated): newer llama.cpp "router mode"
+# (triggered when llama-server is started with no model, as Ollama's
+# discovery does) skips per-device compute-capability reporting by design
+# -- falls back to unfiltered CUDA arch matching with a warning; worth
+# knowing about if you see that warning in the logs.
 #
 # Runs Ollama on an alternate port by default (not 11434), so it can run
 # side by side with a system Ollama instance and be reused as a fixed,

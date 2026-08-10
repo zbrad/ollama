@@ -90,18 +90,14 @@ sudo systemctl start ollama
 cd .. && OLLAMA_HOST=127.0.0.1:11435 ./ollama serve
 ```
 
-> **Known limitation (2026-08-09, not yet fixed)**: in local mode, Ollama's
-> own GPU-discovery subprocess mixes this repo's own CMake-built `libggml`
-> (in `build/lib/ollama/`) with the deployed tuned build (in
-> `build/lib/ollama/local_llama_cpp/`) on its search path — confirmed to
-> segfault the discovery probe, which then falls back to CPU-only. The
-> deployed binary itself works fine standalone
-> (`build/lib/ollama/local_llama_cpp/llama-server --list-devices` correctly
-> lists the GPU) — this is specifically about Ollama's discovery subprocess
-> mixing two library sets, not the binary itself. System mode is unaffected
-> (no competing Ollama-built `libggml` present at `/usr/local/lib/ollama/`
-> on a normal install). Root-cause details in the `-home-zbrad-gh` project
-> memory's `tuned-builds-expansion-plan.md`.
+> **Fixed (2026-08-10)**: local mode's GPU-discovery subprocess used to
+> segfault (Ollama's own common `libggml` at `build/lib/ollama/` loading
+> ahead of the deployed tuned build's matching set, due to `llamaDir` being
+> derived from an unresolved symlink path). Fixed in `llm/llama_server.go`
+> by resolving symlinks before deriving `llamaDir`. Verified end-to-end
+> with real inference (`./ollama run ...`), not just discovery logs — see
+> the `-home-zbrad-gh` project memory's `tuned-builds-expansion-plan.md`
+> for the full root-cause writeup.
 
 Both scripts accept `--dry-run` (preview without writing files), `--variant`,
 `--cuda-version`, and `--tag` (fetch an exact release, bypassing
