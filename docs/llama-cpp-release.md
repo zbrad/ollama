@@ -50,61 +50,89 @@ libraries in the subdirectory continue to be used unless you also replace them.
 
 ## Deploying a Published Release
 
-`zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for each
-GPU-variant build (see that repo's `tuned/` directory) — tagged
-`v<build-number>-<variant>-cu<XXX>`, e.g. `v10333-gb10-cu133`. Both repos are
-public, so the release assets are fetchable from any machine, no auth or
-`gh` CLI required.
+Two `tuned/package.sh` scripts publish the pieces this flow deploys:
 
-### One-liner install on a fresh machine (no clone required)
+- `zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for
+  each GPU-variant build — tagged `v<build-number>-<variant>-cu<XXX>`,
+  e.g. `v10333-gb10-cu133`.
+- This repo's own `tuned/package.sh` publishes the `ollama` Go binary
+  itself (this fork's GPU-discovery fixes on top of upstream) — tagged
+  `v<build-number>-<goarch>`, e.g. `v5623-arm64`. No native payload is
+  packaged here (the llama.cpp release above already provides a complete,
+  self-contained one); just the binary.
+
+Both repos are public, so the release assets are fetchable from any
+machine, no auth or `gh` CLI required.
+
+### One-liner install on a fresh machine (no clone required, no sudo required)
+
+**All-inclusive**: `install-tuned.sh` fetches *both* this fork's `ollama`
+binary (built by `tuned/package.sh` in this repo — carries this fork's
+GPU-discovery fixes, notably commit `4d97a0f5`'s symlink-resolution
+segfault fix, which the *official* `ollama.com/install.sh` binary does
+**not** have and will segfault against the llama.cpp release below) *and*
+the matching `zbrad/llama.cpp` release, all in one step.
+
+**Default target is `~/.local`** — no `sudo`, no system files touched,
+runs on an alternate port (`11435` by default) so it never conflicts with
+an existing system-installed Ollama.
 
 **Check first, install second** — validate the environment before
 downloading/deploying anything, so a bad environment fails fast with a
 clear diagnostic instead of partway through a real install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/precheck-llama-cpp-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/precheck-tuned.sh | bash
 ```
 
 Checks: required tools, network reachability, GPU + driver detection, CUDA
-toolkit presence, Ollama installed + registered with systemd, and (via a
-small GitHub API metadata call, no tarball download) that a matching
-release actually exists for this machine's variant/CUDA combination.
-Failures point to the relevant NVIDIA/Ollama download or docs page. Exits
-0 if everything passes.
+toolkit presence, whether a system Ollama service is running (and, only on
+a real interactive TTY, offers to stop it — never prompts or acts when
+piped non-interactively), and — via small GitHub API metadata calls, no
+tarball downloads — that matching releases actually exist for both the
+`ollama` binary (by CPU architecture) and the llama.cpp build (by GPU
+variant/CUDA version). Failures point to the relevant NVIDIA/Ollama
+download or docs page. Exits 0 if everything passes.
 
 Then, once the precheck is clean:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh | sudo bash
-sudo systemctl restart ollama
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-tuned.sh | bash
 ```
 
 Both scripts are self-contained — they don't source anything else, so they
-work piped straight into `bash`/`sudo bash` without a checkout of this
-repo. The installer detects GPU variant + CUDA version the same way the
-precheck does, fetches the matching release via plain `curl` against the
-public GitHub API (no `gh` CLI dependency), and deploys into
-`/usr/local/lib/ollama/`. It auto-elevates via `sudo` if not already root,
-but piping directly into `sudo bash` (as above) avoids a mid-script
-re-prompt. Override detection on either script with `LLAMA_CPP_VARIANT`,
-`LLAMA_CPP_CUDA_VERSION`, or pin an exact release with `LLAMA_CPP_TAG`:
+work piped straight into `bash` without a checkout of this repo. Deploys:
+
+- `~/.local/bin/ollama` — this fork's binary
+- `~/.local/lib/ollama/local_llama_cpp/` + a `llama-server` symlink — the
+  llama.cpp release, same structure as the system-mode deploy below, just
+  rooted under `~/.local`
+- A `systemd --user` unit (`~/.config/systemd/user/ollama-tuned.service`),
+  if a user systemd session is available — enable with
+  `systemctl --user enable --now ollama-tuned`; otherwise the script prints
+  the plain foreground run command
+
+Override detection with `LLAMA_CPP_VARIANT`, `LLAMA_CPP_CUDA_VERSION`,
+`LLAMA_CPP_TAG`, `OLLAMA_TAG`, `INSTALL_DIR`, or `OLLAMA_TUNED_PORT`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh \
-  | sudo env LLAMA_CPP_TAG=v10333-gb10-cu133 bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-tuned.sh \
+  | env LLAMA_CPP_TAG=v10333-gb10-cu133 OLLAMA_TUNED_PORT=11440 bash
 ```
 
-(`sudo env VAR=val bash`, not `VAR=val sudo bash` — `sudo` resets the
-environment by default, so a plain variable prefix in front of `sudo`
-never reaches the process it execs; `env` inside the `sudo` invocation is
-what actually sets it there.)
+For a **system-wide** install instead (`/usr/local/lib/ollama/`, managed
+by systemd, needs `sudo`), see `deploy-llama-cpp-system.sh` below.
 
 ### From a checkout of this repo
 
-Two scripts share common logic from `scripts/lib/llama-cpp-release.sh` (kept
-in sync with the one-liner installer above, but only usable from a real
-checkout since they `source` a sibling file by relative path):
+These two scripts deploy **only the llama.cpp piece** — they assume an
+`ollama` binary already exists (either stock, if you don't need the
+GPU-discovery fixes for your deployment shape, or built locally via
+`go build .`). They predate `install-tuned.sh` and don't fetch the ollama
+binary release themselves. Share common logic from
+`scripts/lib/llama-cpp-release.sh` (kept in sync with `install-tuned.sh`
+manually, but only usable from a real checkout since they `source` a
+sibling file by relative path):
 
 - **`scripts/deploy-llama-cpp-system.sh`** — deploys into a system Ollama
   installation (`/usr/local/lib/ollama/`, managed by systemd). Needs `sudo`.

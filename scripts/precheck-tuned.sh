@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# Validate a machine's environment before running
-# install-llama-cpp-release.sh — checks everything that script assumes
-# (GPU/driver/CUDA toolkit present, tools available, network reachable, a
-# matching release actually exists) and reports pass/fail clearly, instead
-# of letting the installer fail partway through a real download/deploy.
+# Validate a machine's environment before running install-tuned.sh —
+# checks everything that script assumes (GPU/driver/CUDA toolkit present,
+# tools available, network reachable, matching releases actually exist)
+# and reports pass/fail clearly, instead of letting the installer fail
+# partway through a real download/deploy.
 #
-# Self-contained, same as install-llama-cpp-release.sh — works piped
-# straight into bash, no checkout required:
+# Self-contained, same as install-tuned.sh — works piped straight into
+# bash, no checkout required:
 #
-#   curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/precheck-llama-cpp-release.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/precheck-tuned.sh | bash
 #
-# Does NOT download the release tarball itself (that's the actual install
-# step) — only makes small GitHub API metadata calls to confirm a matching
-# release exists, which is itself one of the things worth checking before
-# committing to the real download.
+# Does NOT download either release tarball (that's the actual install
+# step) — only makes small GitHub API metadata calls to confirm matching
+# releases exist, which is itself one of the things worth checking before
+# committing to the real download. The one exception: if a running system
+# Ollama service is detected, offers (interactive TTY only, never
+# unattended) to stop it -- see the "Ollama" section below.
 #
-# Exit code 0 = safe to run install-llama-cpp-release.sh. Non-zero = at
-# least one check failed; see output for which and why.
+# Exit code 0 = safe to run install-tuned.sh. Non-zero = at least one
+# check failed; see output for which and why.
 
 set -uo pipefail  # deliberately not -e: we want every check to run and report, not stop at the first failure
 
+OLLAMA_REPO="zbrad/ollama"
 LLAMA_CPP_REPO="zbrad/llama.cpp"
 VARIANT="${LLAMA_CPP_VARIANT:-}"
 CUDA_VERSION="${LLAMA_CPP_CUDA_VERSION:-}"
@@ -42,9 +45,9 @@ for tool in curl tar bash; do
     fi
 done
 if command -v sudo >/dev/null 2>&1 || [ "$(id -u)" -eq 0 ]; then
-    ok "sudo available (or already root) — needed to deploy into /usr/local/lib/ollama/"
+    ok "sudo available (or already root) — not required by install-tuned.sh's default ~/.local install, but used if you opt to stop a running system service, or if you use deploy-llama-cpp-system.sh instead"
 else
-    bad "not root and sudo not found — cannot deploy into /usr/local/lib/ollama/"
+    warn "no sudo and not root — fine for install-tuned.sh's default ~/.local install; only matters for the system-wide alternative"
 fi
 
 section "Network"
@@ -153,11 +156,13 @@ if [ -n "$CUDA_VERSION" ]; then
 fi
 
 section "Ollama"
+# install-tuned.sh brings its own ollama binary (this fork's, with the
+# GPU-discovery fixes) into ~/.local, so a pre-existing `ollama` on PATH
+# is informational, not required.
 if command -v ollama >/dev/null 2>&1; then
-    ok "ollama binary found: $(command -v ollama)"
+    ok "ollama binary already on PATH: $(command -v ollama) ($(ollama --version 2>&1 | tail -1))"
 else
-    bad "ollama not found — install it first: curl -fsSL https://ollama.com/install.sh | sh"
-    echo "      Ollama downloads/docs: https://ollama.com/download"
+    ok "no ollama on PATH yet — install-tuned.sh will fetch its own into ~/.local/bin"
 fi
 if command -v systemctl >/dev/null 2>&1; then
     # Captured to a variable before grepping, not `systemctl ... | grep -q`
@@ -169,17 +174,31 @@ if command -v systemctl >/dev/null 2>&1; then
     # plainly was (verified separately via the same command run standalone).
     unit_files="$(systemctl list-unit-files 2>/dev/null || true)"
     if echo "$unit_files" | grep -q '^ollama\.service'; then
-        ok "ollama.service registered with systemd"
+        ok "system ollama.service registered with systemd"
         state="$(systemctl is-active ollama 2>&1 || true)"
-        ok "ollama.service current state: $state"
+        if [ "$state" = "active" ] || [ "$state" = "activating" ]; then
+            warn "system ollama.service is $state (port 11434) — install-tuned.sh targets an alternate port by default, so this isn't a conflict, but two GPU-capable instances at once will contend for VRAM"
+            if [ -t 0 ] && [ -t 1 ]; then
+                read -r -p ">>> Stop it now? [y/N] " reply
+                case "$reply" in
+                    [yY]|[yY][eE][sS])
+                        echo "      Stopping system ollama.service..."
+                        sudo systemctl stop ollama && ok "system ollama.service stopped" || warn "  failed to stop it"
+                        ;;
+                    *) ;;
+                esac
+            fi
+        else
+            ok "system ollama.service current state: $state"
+        fi
     else
-        warn "ollama.service not registered with systemd — install/restart steps below assume it is"
+        ok "system ollama.service not registered — nothing to conflict with"
     fi
 else
-    warn "systemctl not found — this environment may not use systemd; the install script's restart instructions won't apply as-is"
+    warn "systemctl not found — this environment may not use systemd; install-tuned.sh's optional systemd --user unit won't apply"
 fi
 
-section "Matching Release"
+section "Matching Release: llama.cpp (GPU-enabled)"
 if [ -n "$VARIANT" ]; then
     candidates="$(
         curl -fsSL --max-time 15 "https://api.github.com/repos/${LLAMA_CPP_REPO}/releases?per_page=100" 2>/dev/null \
@@ -205,15 +224,39 @@ else
     bad "no GPU variant resolved — cannot check for a matching release"
 fi
 
+section "Matching Release: ollama binary"
+GOARCH="$(uname -m)"
+case "$GOARCH" in
+    aarch64|arm64) GOARCH="arm64" ;;
+    x86_64|amd64)  GOARCH="amd64" ;;
+    *) GOARCH="" ;;
+esac
+if [ -n "$GOARCH" ]; then
+    ollama_candidates="$(
+        curl -fsSL --max-time 15 "https://api.github.com/repos/${OLLAMA_REPO}/releases?per_page=100" 2>/dev/null \
+            | grep -o '"tag_name": *"[^"]*"' \
+            | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
+            | grep -E "^v[0-9]+-${GOARCH}\$" || true
+    )"
+    if [ -z "$ollama_candidates" ]; then
+        bad "no releases found on $OLLAMA_REPO matching arch '$GOARCH'"
+    else
+        latest="$(echo "$ollama_candidates" | sort -t- -k1.2 -n | tail -1)"
+        ok "ollama release available: $latest"
+    fi
+else
+    bad "could not map $(uname -m) to a Go architecture (expected aarch64/arm64 or x86_64/amd64)"
+fi
+
 section "Summary"
 printf '  \033[32m%d passed\033[0m, \033[33m%d warning(s)\033[0m, \033[31m%d failed\033[0m\n' "$PASS" "$WARN" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
     echo ""
-    echo "Not safe to run install-llama-cpp-release.sh yet — fix the ✗ items above first."
+    echo "Not safe to run install-tuned.sh yet — fix the ✗ items above first."
     exit 1
 else
     echo ""
     echo "All checks passed. Safe to run:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-llama-cpp-release.sh | sudo bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/zbrad/ollama/tuned-builds/scripts/install-tuned.sh | bash"
     exit 0
 fi
