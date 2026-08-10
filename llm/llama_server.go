@@ -483,6 +483,22 @@ func llamaServerLibraryPathEnv() string {
 }
 
 func llamaServerLibraryPaths(exe string, gpuLibs []string, envUpdates map[string]string) []string {
+	// Resolve symlinks before deriving llamaDir: FindLlamaServer can return
+	// a symlink at ml.LibOllamaPath itself (e.g. a manually deployed build
+	// symlinked into place there so the top-level binary search finds it)
+	// pointing at the real binary one level deeper, in its own backend
+	// directory. Using the un-resolved symlink path here makes llamaDir
+	// equal ml.LibOllamaPath instead of that backend directory, which then
+	// defeats the "skip dirs already covered by llamaDir" dedup below:
+	// ml.LibOllamaPath's own (potentially differently-versioned) common
+	// libs end up ahead of the backend directory's matching set on
+	// LD_LIBRARY_PATH, so a backend .so can load against a mismatched
+	// ggml-base/ggml-cpu already resident from the wrong directory --
+	// confirmed via a real crash (segfault) in exactly this scenario, not
+	// just a theoretical ABI concern.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
 	llamaDir := filepath.Dir(exe)
 	seen := map[string]bool{}
 	var libraryPaths []string

@@ -120,7 +120,7 @@ llama_release_copy_into() {
 
     if [[ "${DRY_RUN:-false}" == true ]]; then
         echo "[dry-run] mkdir -p $dest_dir"
-        echo "[dry-run] copy llama-server, llama-quantize, lib*.so.* from $source_dir -> $dest_dir"
+        echo "[dry-run] copy llama-server, llama-quantize, lib*.so* from $source_dir -> $dest_dir"
         return 0
     fi
 
@@ -135,7 +135,12 @@ llama_release_copy_into() {
     done
 
     echo "Copying shared libraries..."
-    for lib in "$source_dir"/lib*.so.*; do
+    # Matches both versioned (libggml-base.so.0.19.0) and bare
+    # (libllama-server-impl.so) filenames -- llama-server/llama-quantize
+    # each link a same-named unversioned *-impl.so that a "lib*.so.*"-only
+    # glob misses entirely (confirmed via a real "cannot open shared
+    # object file" failure this caused on a deployed build).
+    for lib in "$source_dir"/lib*.so "$source_dir"/lib*.so.*; do
         [[ -f "$lib" ]] || continue
         local lib_name
         lib_name="$(basename "$lib")"
