@@ -52,7 +52,7 @@ echo "  Built binary reports: ${BINARY_VERSION}"
 DIST_DIR="${REPODIR}/dist"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
-TARBALL="${DIST_DIR}/ollama-${GOARCH}-${OLLAMA_TUNED_BUILD_NUMBER}.tar.gz"
+TARBALL="${DIST_DIR}/ollama-${OLLAMA_TUNED_BUILD_NUMBER}-${GOARCH}.tar.gz"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "${STAGE}"' EXIT
