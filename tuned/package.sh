@@ -20,6 +20,9 @@ set -euo pipefail
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPODIR}"
 
+# shellcheck source=common.sh
+source "${REPODIR}/tuned/common.sh"
+
 GOARCH="$(go env GOARCH)"
 GOOS="$(go env GOOS)"
 [[ "${GOOS}" == "linux" ]] || { echo "ERROR: tuned/package.sh only supports linux (got ${GOOS})" >&2; exit 1; }
@@ -68,11 +71,8 @@ RELEASE_TITLE="ollama ${OLLAMA_TUNED_BUILD_NUMBER} (${OLLAMA_TUNED_BUILD_COMMIT}
 
 echo ""
 echo "Publishing to GitHub release ${RELEASE_TAG}..."
-gh release create "${RELEASE_TAG}" \
-    --repo zbrad/ollama \
-    --title "${RELEASE_TITLE}" \
-    --target "tuned-builds" \
-    --notes "ollama Go binary only (no native payload -- deploy zbrad/llama.cpp's own tuned-builds release alongside it for GPU support, see docs/llama-cpp-release.md). Carries this fork's GPU-discovery fixes on top of upstream (notably the symlink-resolution segfault fix, commit 4d97a0f5). Built for ${GOARCH}/linux." \
+gpu_tuned_publish_release "zbrad/ollama" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
+    "ollama Go binary only (no native payload -- deploy zbrad/llama.cpp's own tuned-builds release alongside it for GPU support, see docs/llama-cpp-release.md). Carries this fork's GPU-discovery fixes on top of upstream (notably the symlink-resolution segfault fix, commit 4d97a0f5). Built for ${GOARCH}/linux." \
     "${TARBALL}#$(basename "${TARBALL}")"
 
 echo ""
