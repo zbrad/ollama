@@ -107,7 +107,7 @@ llama_release_fetch() {
     [[ -n "$asset" ]] || llama_release_die "no .tar.gz asset found in release $TAG"
     tar -xzf "$asset" -C "$dest_dir"
 
-    [[ -x "$dest_dir/llama-server" ]] || llama_release_die "llama-server not found after extracting $TAG"
+    [[ -x "$dest_dir/llama-server-tuned" || -x "$dest_dir/llama-server" ]] || llama_release_die "llama-server-tuned not found after extracting $TAG"
 }
 
 # llama_release_copy_into <source-dir> <dest-dir> — copies binaries +
@@ -127,8 +127,13 @@ llama_release_copy_into() {
     mkdir -p "$dest_dir"
 
     echo "Copying binaries..."
+    # Releases ship <name>-tuned; Ollama looks for the plain name, so install under
+    # that name (older releases already use it).
     for bin in llama-server llama-quantize; do
-        if [[ -f "$source_dir/$bin" ]]; then
+        if [[ -f "$source_dir/$bin-tuned" ]]; then
+            cp -p "$source_dir/$bin-tuned" "$dest_dir/$bin"
+            echo "  copied: $bin-tuned as $bin"
+        elif [[ -f "$source_dir/$bin" ]]; then
             cp -p "$source_dir/$bin" "$dest_dir/"
             echo "  copied: $bin"
         fi

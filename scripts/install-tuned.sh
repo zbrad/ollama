@@ -194,7 +194,10 @@ LIB_OLLAMA_DIR="$INSTALL_DIR/lib/ollama"
 TARGET_DIR="$LIB_OLLAMA_DIR/local_llama_cpp"
 mkdir -p "$TARGET_DIR"
 tar -xzf "$WORK_DIR/llama.tar.gz" -C "$TARGET_DIR"
-[ -x "$TARGET_DIR/llama-server" ] || die "llama-server not found after extracting $TAG"
+# New releases ship llama-server-tuned; Ollama looks for the plain name, so link it
+# here, inside Ollama's own private directory only.
+if [ -x "$TARGET_DIR/llama-server-tuned" ]; then ln -sf llama-server-tuned "$TARGET_DIR/llama-server"; fi
+[ -x "$TARGET_DIR/llama-server" ] || die "llama-server-tuned not found after extracting $TAG"
 
 status "Normalizing sonames..."
 for lib in "$TARGET_DIR"/lib*.so.*; do
