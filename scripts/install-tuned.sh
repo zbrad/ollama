@@ -40,6 +40,23 @@ OLLAMA_TAG="${OLLAMA_TAG:-}"
 status() { echo ">>> $*" >&2; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# newest_tag — reads release tags on stdin, prints the newest. A date-label tag (v0.<YYYYMMDD>.<seq>-...) always
+# outranks an older-form one (v<N>-...); date labels rank by date then sequence, older forms by their number
+# (docs/ARCHITECTURE.md E7 in zbrad/tuned-common). Never ranks by list order.
+newest_tag() {
+    local t key best="" bestkey="" legacy="" legacykey=""
+    while IFS= read -r t; do
+        if [[ "$t" =~ ^v0\.([0-9]{8})\.([0-9]+)- ]]; then
+            key="$(printf '%s %012d' "${BASH_REMATCH[1]}" "$((10#${BASH_REMATCH[2]}))")"
+            if [[ -z "$bestkey" || "$key" > "$bestkey" ]]; then best="$t"; bestkey="$key"; fi
+        elif [[ "$t" =~ ^v([0-9]+)- ]]; then
+            key="$(printf '%012d' "$((10#${BASH_REMATCH[1]}))")"
+            if [[ -z "$legacykey" || "$key" > "$legacykey" ]]; then legacy="$t"; legacykey="$key"; fi
+        fi
+    done
+    if [[ -n "$best" ]]; then echo "$best"; elif [[ -n "$legacy" ]]; then echo "$legacy"; fi
+}
+
 command -v curl >/dev/null 2>&1 || die "curl is required but not found"
 command -v tar >/dev/null 2>&1 || die "tar is required but not found"
 command -v go >/dev/null 2>&1 || true  # not required at runtime, only noted if relevant later
@@ -123,11 +140,11 @@ if [ -z "$EXACT_TAG" ]; then
         curl -fsSL "https://api.github.com/repos/${LLAMA_CPP_REPO}/releases?per_page=100" \
             | grep -o '"tag_name": *"[^"]*"' \
             | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v[0-9]+-${VARIANT}-cu[0-9]+\$" || true
+            | grep -E "^v(0\.[0-9]{8}\.[0-9]+|[0-9]+)-${VARIANT}-cu[0-9]+\$" || true
     )"
     [ -n "$candidates" ] || die "no llama.cpp releases found on $LLAMA_CPP_REPO matching variant '$VARIANT'"
 
-    TAG="$(echo "$candidates" | grep -- "-${CUDA_TAG}\$" | sort -t- -k1.2 -n | tail -1 || true)"
+    TAG="$(echo "$candidates" | grep -- "-${CUDA_TAG}\$" | newest_tag || true)"
     if [ -z "$TAG" ]; then
         TAG="$(
             echo "$candidates" | while read -r t; do
@@ -139,7 +156,7 @@ if [ -z "$EXACT_TAG" ]; then
                 if [ "$((10#$t_minor))" -le "$((10#$host_minor))" ]; then
                     echo "$t"
                 fi
-            done | sort -t- -k1.2 -n | tail -1
+            done | newest_tag
         )"
         [ -n "$TAG" ] && status "NOTE: no exact CUDA ${CUDA_VERSION} release for ${VARIANT}; falling back to $TAG"
     fi
@@ -151,14 +168,16 @@ status "llama.cpp release: $TAG"
 
 # --- Resolve ollama binary release tag ---
 if [ -z "$OLLAMA_TAG" ]; then
-    OLLAMA_TAG="$(
+    # An ollama release is bound to a llama.cpp release: prefer the newest one for the chosen release's variant and
+    # CUDA tag (v0.<date>.<seq>-<variant>-cu<XXX>), else the newest older-form one for this arch (v<N>-<arch>).
+    ollama_tags="$(
         curl -fsSL "https://api.github.com/repos/${OLLAMA_REPO}/releases?per_page=100" \
             | grep -o '"tag_name": *"[^"]*"' \
-            | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v[0-9]+-${GOARCH}\$" \
-            | sort -t- -k1.2 -n | tail -1 || true
+            | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' || true
     )"
-    [ -n "$OLLAMA_TAG" ] || die "no ollama releases found on $OLLAMA_REPO matching arch '$GOARCH'"
+    OLLAMA_TAG="$(echo "$ollama_tags" | grep -E "^v0\.[0-9]{8}\.[0-9]+-${VARIANT}-cu${TAG##*-cu}\$" | newest_tag || true)"
+    [ -n "$OLLAMA_TAG" ] || OLLAMA_TAG="$(echo "$ollama_tags" | grep -E "^v[0-9]+-${GOARCH}\$" | newest_tag || true)"
+    [ -n "$OLLAMA_TAG" ] || die "no ollama releases found on $OLLAMA_REPO matching ${VARIANT}-cu${TAG##*-cu} or arch '$GOARCH'"
 fi
 status "ollama release:     $OLLAMA_TAG"
 

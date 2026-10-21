@@ -15,6 +15,23 @@
 
 llama_release_die() { echo "error: $*" >&2; exit 1; }
 
+# llama_release_newest_tag — reads release tags on stdin, prints the newest. A date-label tag (v0.<YYYYMMDD>.<seq>-...) always
+# outranks an older-form one (v<N>-...); date labels rank by date then sequence, older forms by their number
+# (docs/ARCHITECTURE.md E7 in zbrad/tuned-common). Never ranks by list order.
+llama_release_newest_tag() {
+    local t key best="" bestkey="" legacy="" legacykey=""
+    while IFS= read -r t; do
+        if [[ "$t" =~ ^v0\.([0-9]{8})\.([0-9]+)- ]]; then
+            key="$(printf '%s %012d' "${BASH_REMATCH[1]}" "$((10#${BASH_REMATCH[2]}))")"
+            if [[ -z "$bestkey" || "$key" > "$bestkey" ]]; then best="$t"; bestkey="$key"; fi
+        elif [[ "$t" =~ ^v([0-9]+)- ]]; then
+            key="$(printf '%012d' "$((10#${BASH_REMATCH[1]}))")"
+            if [[ -z "$legacykey" || "$key" > "$legacykey" ]]; then legacy="$t"; legacykey="$key"; fi
+        fi
+    done
+    if [[ -n "$best" ]]; then echo "$best"; elif [[ -n "$legacy" ]]; then echo "$legacy"; fi
+}
+
 llama_release_detect_variant() {
     [[ -n "$VARIANT" ]] && return 0
     local gpu_name
@@ -41,8 +58,7 @@ llama_release_detect_cuda() {
     CUDA_MAJOR="${CUDA_VERSION%%.*}"
 }
 
-# llama_release_resolve_tag — sets TAG. Exact CUDA match preferred (highest
-# build number wins); falls back to the newest release with matching CUDA
+# llama_release_resolve_tag — sets TAG. Exact CUDA match preferred (newest wins: date-label tags rank above older v<N> ones); falls back to the newest release with matching CUDA
 # major and toolkit minor <= this host's (CUDA's runtime ABI is
 # forward-compatible only within a major series).
 llama_release_resolve_tag() {
@@ -54,14 +70,14 @@ llama_release_resolve_tag() {
     mapfile -t candidates < <(
         gh release list --repo "$LLAMA_CPP_REPO" --limit 200 2>/dev/null \
             | awk -F'\t' '{print $3}' \
-            | grep -E "^v[0-9]+-${VARIANT}-cu[0-9]+$" || true
+            | grep -E "^v(0\.[0-9]{8}\.[0-9]+|[0-9]+)-${VARIANT}-cu[0-9]+$" || true
     )
-    [[ "${#candidates[@]}" -gt 0 ]] || llama_release_die "no releases found on $LLAMA_CPP_REPO matching variant '$VARIANT' (tag pattern v<N>-${VARIANT}-cu<XXX>)"
+    [[ "${#candidates[@]}" -gt 0 ]] || llama_release_die "no releases found on $LLAMA_CPP_REPO matching variant '$VARIANT' (tag pattern v0.<date>.<seq>-${VARIANT}-cu<XXX> or v<N>-${VARIANT}-cu<XXX>)"
 
     TAG="$(
         for t in "${candidates[@]}"; do
             [[ "$t" == *"-${CUDA_TAG}" ]] && echo "$t"
-        done | sort -t- -k1.2 -n | tail -1
+        done | llama_release_newest_tag
     )"
 
     if [[ -z "$TAG" ]]; then
@@ -75,7 +91,7 @@ llama_release_resolve_tag() {
                 if (( 10#$t_minor <= 10#$host_minor )); then
                     echo "$t"
                 fi
-            done | sort -t- -k1.2 -n | tail -1
+            done | llama_release_newest_tag
         )"
         [[ -n "$TAG" ]] && echo "NOTE: no exact CUDA ${CUDA_VERSION} release for ${VARIANT}; falling back to $TAG (CUDA runtime ABI is forward-compatible within a major series)." >&2
     fi

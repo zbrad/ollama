@@ -23,6 +23,23 @@
 set -uo pipefail  # deliberately not -e: we want every check to run and report, not stop at the first failure
 
 OLLAMA_REPO="zbrad/ollama"
+
+# newest_tag — reads release tags on stdin, prints the newest. A date-label tag (v0.<YYYYMMDD>.<seq>-...) always
+# outranks an older-form one (v<N>-...); date labels rank by date then sequence, older forms by their number
+# (docs/ARCHITECTURE.md E7 in zbrad/tuned-common). Never ranks by list order.
+newest_tag() {
+    local t key best="" bestkey="" legacy="" legacykey=""
+    while IFS= read -r t; do
+        if [[ "$t" =~ ^v0\.([0-9]{8})\.([0-9]+)- ]]; then
+            key="$(printf '%s %012d' "${BASH_REMATCH[1]}" "$((10#${BASH_REMATCH[2]}))")"
+            if [[ -z "$bestkey" || "$key" > "$bestkey" ]]; then best="$t"; bestkey="$key"; fi
+        elif [[ "$t" =~ ^v([0-9]+)- ]]; then
+            key="$(printf '%012d' "$((10#${BASH_REMATCH[1]}))")"
+            if [[ -z "$legacykey" || "$key" > "$legacykey" ]]; then legacy="$t"; legacykey="$key"; fi
+        fi
+    done
+    if [[ -n "$best" ]]; then echo "$best"; elif [[ -n "$legacy" ]]; then echo "$legacy"; fi
+}
 LLAMA_CPP_REPO="zbrad/llama.cpp"
 VARIANT="${LLAMA_CPP_VARIANT:-}"
 CUDA_VERSION="${LLAMA_CPP_CUDA_VERSION:-}"
@@ -204,7 +221,7 @@ if [ -n "$VARIANT" ]; then
         curl -fsSL --max-time 15 "https://api.github.com/repos/${LLAMA_CPP_REPO}/releases?per_page=100" 2>/dev/null \
             | grep -o '"tag_name": *"[^"]*"' \
             | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v[0-9]+-${VARIANT}-cu[0-9]+\$" || true
+            | grep -E "^v(0\.[0-9]{8}\.[0-9]+|[0-9]+)-${VARIANT}-cu[0-9]+\$" || true
     )"
     if [ -z "$candidates" ]; then
         bad "no releases found on $LLAMA_CPP_REPO matching variant '$VARIANT'"
@@ -214,7 +231,7 @@ if [ -n "$VARIANT" ]; then
         if [ -n "$CUDA_VERSION" ]; then
             cuda_tag="cu${CUDA_VERSION//./}"
             if echo "$candidates" | grep -q -- "-${cuda_tag}\$"; then
-                ok "exact CUDA match available: $(echo "$candidates" | grep -- "-${cuda_tag}\$" | sort -t- -k1.2 -n | tail -1)"
+                ok "exact CUDA match available: $(echo "$candidates" | grep -- "-${cuda_tag}\$" | newest_tag)"
             else
                 warn "no exact CUDA ${CUDA_VERSION} release for '$VARIANT' — installer will fall back across CUDA minor versions within the same major series (candidates: $(echo "$candidates" | tr '\n' ' '))"
             fi
@@ -232,16 +249,17 @@ case "$GOARCH" in
     *) GOARCH="" ;;
 esac
 if [ -n "$GOARCH" ]; then
-    ollama_candidates="$(
+    ollama_tags="$(
         curl -fsSL --max-time 15 "https://api.github.com/repos/${OLLAMA_REPO}/releases?per_page=100" 2>/dev/null \
             | grep -o '"tag_name": *"[^"]*"' \
-            | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v[0-9]+-${GOARCH}\$" || true
+            | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' || true
     )"
-    if [ -z "$ollama_candidates" ]; then
-        bad "no releases found on $OLLAMA_REPO matching arch '$GOARCH'"
+    # Bound to a llama.cpp release: the newest v0.<date>.<seq>-<variant>-cu<XXX> for this variant, else an older v<N>-<arch>.
+    latest="$(echo "$ollama_tags" | grep -E "^v0\.[0-9]{8}\.[0-9]+-${VARIANT:-none}-cu[0-9]+\$" | newest_tag || true)"
+    [ -n "$latest" ] || latest="$(echo "$ollama_tags" | grep -E "^v[0-9]+-${GOARCH}\$" | newest_tag || true)"
+    if [ -z "$latest" ]; then
+        bad "no releases found on $OLLAMA_REPO matching variant '${VARIANT:-?}' or arch '$GOARCH'"
     else
-        latest="$(echo "$ollama_candidates" | sort -t- -k1.2 -n | tail -1)"
         ok "ollama release available: $latest"
     fi
 else

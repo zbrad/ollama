@@ -50,16 +50,21 @@ libraries in the subdirectory continue to be used unless you also replace them.
 
 ## Deploying a Published Release
 
-Two `tuned/package.sh` scripts publish the pieces this flow deploys:
+Two repos publish the pieces this flow deploys:
 
-- `zbrad/llama.cpp`'s `tuned/package.sh` publishes a GitHub release for
-  each GPU-variant build — tagged `v<build-number>-<variant>-cu<XXX>`,
-  e.g. `v10333-gb10-cu133`.
-- This repo's own `tuned/package.sh` publishes the `ollama` Go binary
-  itself (this fork's GPU-discovery fixes on top of upstream) — tagged
-  `v<build-number>-<goarch>`, e.g. `v5623-arm64`. No native payload is
-  packaged here (the llama.cpp release above already provides a complete,
-  self-contained one); just the binary.
+- `zbrad/llama.cpp` publishes a GitHub release for each GPU-variant build,
+  tagged `v0.<YYYYMMDD>.<seq>-<variant>-cu<XXX>`, e.g.
+  `v0.20261019.0-gb10-cu134`. Older releases use `v<build-number>-<variant>-cu<XXX>`
+  (e.g. `v10333-gb10-cu133`); a date-label tag always ranks above them.
+- This repo publishes the `ollama` Go binary itself (this fork's GPU-discovery
+  fixes on top of upstream) through `tuned/build.sh` -> `full_test.sh` ->
+  `package.sh` -> `smoke_test.sh` -> `release.sh` -> `publish.sh`. It is bound
+  to one llama.cpp release: the tag is `v0.<YYYYMMDD>.<seq>-<variant>-cu<XXX>`
+  with ollama's own date label, and the paired llama.cpp tag is named in the
+  release notes and in the binary's build info. Older releases use
+  `v<build-number>-<goarch>` (e.g. `v5623-arm64`); the installers fall back to
+  them when no bound release exists. No native payload is packaged here (the
+  llama.cpp release provides a complete, self-contained one); just the binary.
 
 Both repos are public, so the release assets are fetchable from any
 machine, no auth or `gh` CLI required.
