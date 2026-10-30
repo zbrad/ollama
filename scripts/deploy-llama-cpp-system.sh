@@ -11,7 +11,8 @@
 # Needs root (writes to /usr/local/lib/ollama). Requires an interactive
 # terminal for sudo -- run this yourself, it cannot be run non-interactively.
 #
-# Release tag format: v<build-number>-<variant>-cu<XXX>, e.g. v10333-gb10-cu133
+# Release tag format: v0.<YYYYMMDD>.<seq>-<variant>-cu<XXX>, e.g. v0.20261019.0-gb10-cu134 (older
+# releases used v<build-number>-<variant>-cu<XXX>, e.g. v10333-gb10-cu133; both are still matched)
 #
 # Usage:
 #   sudo ./scripts/deploy-llama-cpp-system.sh [OPTIONS]
