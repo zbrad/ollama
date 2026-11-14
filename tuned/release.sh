@@ -108,7 +108,7 @@ fi
 # variant and toolkit. (A deleted pair would leave a release that names nothing a user can fetch.)
 if [[ -z "${LLAMA_CPP_TAG}" ]]; then
     fail "package-info.txt names no llama_cpp_tag; run tuned/package.sh ${VARIANT}"
-elif [[ "${LLAMA_CPP_TAG}" != v0.*-"${GPU_TUNED_VARIANT}-${CUDA_TAG}" ]]; then
+elif [[ ! "${LLAMA_CPP_TAG}" =~ ^v[0-9.]+[-.][0-9]{8}\.[0-9]+-${GPU_TUNED_VARIANT}-${CUDA_TAG}$ ]]; then
     fail "the paired llama.cpp release ${LLAMA_CPP_TAG} is not a ${GPU_TUNED_VARIANT}-${CUDA_TAG} release"
 elif gh release view "${LLAMA_CPP_TAG}" --repo "${OLLAMA_TUNED_LLAMA_CPP_REPO}" >/dev/null 2>&1; then
     ok "paired llama.cpp release ${LLAMA_CPP_TAG} still exists on ${OLLAMA_TUNED_LLAMA_CPP_REPO}"

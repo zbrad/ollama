@@ -58,7 +58,7 @@ grep -q "Full test suite summary: go test passed" "${OLLAMA_TUNED_TEST_LOG}" 2>/
 # --- The llama.cpp release this one is paired with ---
 if [[ -n "${OLLAMA_TUNED_LLAMA_CPP_TAG:-}" ]]; then
     LLAMA_CPP_TAG="${OLLAMA_TUNED_LLAMA_CPP_TAG}"
-    [[ "${LLAMA_CPP_TAG}" == v0.*-"${GPU_TUNED_VARIANT}-${CUDA_TAG}" ]] || { echo "ERROR: OLLAMA_TUNED_LLAMA_CPP_TAG=${LLAMA_CPP_TAG} is not a ${GPU_TUNED_VARIANT}-${CUDA_TAG} release." >&2; exit 1; }
+    [[ "${LLAMA_CPP_TAG}" =~ ^v[0-9.]+[-.][0-9]{8}\.[0-9]+-${GPU_TUNED_VARIANT}-${CUDA_TAG}$ ]] || { echo "ERROR: OLLAMA_TUNED_LLAMA_CPP_TAG=${LLAMA_CPP_TAG} is not a ${GPU_TUNED_VARIANT}-${CUDA_TAG} release." >&2; exit 1; }
 else
     LLAMA_CPP_TAG="$(gh api "repos/${OLLAMA_TUNED_LLAMA_CPP_REPO}/releases?per_page=100" --jq '.[].tag_name' | gpu_tuned_newest_release_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}")" \
         || { echo "ERROR: no ${GPU_TUNED_VARIANT}-${CUDA_TAG} release found on ${OLLAMA_TUNED_LLAMA_CPP_REPO} (or gh failed); an ollama release is bound to one." >&2; exit 1; }

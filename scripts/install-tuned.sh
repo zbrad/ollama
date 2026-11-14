@@ -40,14 +40,24 @@ OLLAMA_TAG="${OLLAMA_TAG:-}"
 status() { echo ">>> $*" >&2; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-# newest_tag — reads release tags on stdin, prints the newest. A date-label tag (v0.<YYYYMMDD>.<seq>-...) always
-# outranks an older-form one (v<N>-...); date labels rank by date then sequence, older forms by their number
+# newest_tag — reads release tags on stdin, prints the newest. A date-label tag (v<version>-<YYYYMMDD>.<seq>-... or the
+# unversioned v0.<YYYYMMDD>.<seq>-..., read as version 0) always outranks an older-form one (v<N>-...); date labels
+# rank by version, then date, then sequence (zbrad/tuned-common docs/VERSIONING.md), older forms by their number
 # (docs/ARCHITECTURE.md E7 in zbrad/tuned-common). Never ranks by list order.
 newest_tag() {
-    local t key best="" bestkey="" legacy="" legacykey=""
+    local t key ver dt sq part best="" bestkey="" legacy="" legacykey=""
+    local -a vp
     while IFS= read -r t; do
+        ver=""
         if [[ "$t" =~ ^v0\.([0-9]{8})\.([0-9]+)- ]]; then
-            key="$(printf '%s %012d' "${BASH_REMATCH[1]}" "$((10#${BASH_REMATCH[2]}))")"
+            ver=0; dt="${BASH_REMATCH[1]}"; sq="${BASH_REMATCH[2]}"
+        elif [[ "$t" =~ ^v([0-9]+(\.[0-9]+)*)-([0-9]{8})\.([0-9]+)- ]]; then
+            ver="${BASH_REMATCH[1]}"; dt="${BASH_REMATCH[3]}"; sq="${BASH_REMATCH[4]}"
+        fi
+        if [[ -n "$ver" ]]; then
+            IFS=. read -r -a vp <<< "$ver"; key=""
+            for part in "${vp[@]}" 0 0 0 0; do key+="$(printf '%012d' "$((10#$part))")"; done
+            key="$(printf '%s %s %012d' "${key:0:48}" "$dt" "$((10#$sq))")"
             if [[ -z "$bestkey" || "$key" > "$bestkey" ]]; then best="$t"; bestkey="$key"; fi
         elif [[ "$t" =~ ^v([0-9]+)- ]]; then
             key="$(printf '%012d' "$((10#${BASH_REMATCH[1]}))")"
@@ -140,7 +150,7 @@ if [ -z "$EXACT_TAG" ]; then
         curl -fsSL "https://api.github.com/repos/${LLAMA_CPP_REPO}/releases?per_page=100" \
             | grep -o '"tag_name": *"[^"]*"' \
             | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v(0\.[0-9]{8}\.[0-9]+|[0-9]+)-${VARIANT}-cu[0-9]+\$" || true
+            | grep -E "^v(0\.[0-9]{8}\.[0-9]+|[0-9]+(\.[0-9]+)*-[0-9]{8}\.[0-9]+|[0-9]+)-${VARIANT}-cu[0-9]+\$" || true
     )"
     [ -n "$candidates" ] || die "no llama.cpp releases found on $LLAMA_CPP_REPO matching variant '$VARIANT'"
 
